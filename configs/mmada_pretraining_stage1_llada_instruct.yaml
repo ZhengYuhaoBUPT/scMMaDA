@@ -8,6 +8,7 @@ experiment:
     name: "mmada-training-stage1-llada-instruct"
     output_dir: "mmada-training-stage1-llada-instruct"
     max_train_examples_t2i: 40000000
+    max_train_examples_mmug: 40000000  # multi-modal understanding for gene expression data
     max_train_examples_mmu: 40000000
 
     save_every: 100
@@ -43,6 +44,14 @@ dataset:
     und_type: "captioning"
     combined_loader_mode: "max_size_cycle"
     params:
+        # CellwText gene expression dataset configuration for multi-modal understanding
+        train_g2t_lmdb_path: null  # Path to CellwText LMDB data (config name kept for compatibility)
+        gene_vocab_path: ""  # Path to scgpt gene vocabulary
+        celltype_label_path: null  # Optional path to cell type labels
+        lmdb_vocab_path: null  # Path to LMDB vocabulary for ID mapping
+        max_gene_tokens: 2000  # Maximum number of gene tokens per sample
+        num_expression_bins: 51  # Number of bins for expression values
+        # ImageNet and SA-1B data paths
         train_t2i_shards_path_or_url: "/data/bgi/data/projects/multimodal/zyh/datasets/imagenet-1k/train"
         # "/data_storage/shared/datasets/imagenet-1k/data/train"
         train_mmu_shards_path_or_url: [ "/data/bgi/data/projects/multimodal/zyh/datasets/SA-1B/sa_000000.tar",
@@ -59,18 +68,15 @@ dataset:
                                     #   "/data_storage/shared/datasets/laion-aesthetics-12m/{00000..00999}.tar" 
         ]
         train_lm_shards_path_or_url: "/data/bgi/data/projects/multimodal/zyh/datasets/falcon-refinedweb/*.parquet"
-        # train_lm_shards_path_or_url: "/data_storage/shared/datasets/falcon-refinedweb/data/data/*.parquet"
         add_caption_prompt: True
         external_caption_path: "/data/bgi/data/projects/multimodal/zyh/datasets/SAM-LLaVA-Captions10M"
-        external_journeydb_caption_path: "" # "/data_storage/shared/datasets/journeydb_anno/train_journeydb_anno.json"
-        external_laion12m_caption_path: "" # "/data_storage/shared/datasets/laion-aesthetic-12m-captions"
-        external_cc12m_caption_path: "" # "/data_storage/shared/datasets/cc12m/captions"
+        external_journeydb_caption_path: ""
+        external_laion12m_caption_path: ""
+        external_cc12m_caption_path: ""
         validation_prompts_file: "validation_prompts/imagenet_prompts.txt"
         mmu_image_root: "/data/bgi/data/projects/multimodal/zyh/datasets/mmu_validation"
-        # mmu_image_root: "/data_storage/ty/MMaDA/mmu_validation"
         # shuffle_buffer_size: 1000
         shuffle_buffer_size: 50
-        # num_workers: 32
         num_workers: 8
         resolution: 256
         pin_memory: True
@@ -85,7 +91,7 @@ dataset:
 optimizer:
     name: adamw
     params: # default adamw params
-        learning_rate: 1e-4
+        learning_rate: 0.0001
         scale_lr: False # scale learning rate by total batch size
         beta1: 0.9
         beta2: 0.999
@@ -104,12 +110,15 @@ training:
     gradient_accumulation_steps: 4
     # gradient_accumulation_steps: 2
     noise_type: "mask"
-    batch_size_t2i: 3
+    # Reduced batch sizes for 4 GPUs (4,5,6,7)
+    batch_size_t2i: 1
+    batch_size_mmug: 1
     batch_size_lm: 1
-    batch_size_mmu: 3
+    batch_size_mmu: 1
     # batch_size_t2i: 7
-    # batch_size_lm: 2
-    # batch_size_mmu: 6
+    # batch_size_t2i: 3
+    # batch_size_t2i: 3
+    # batch_size_t2i: 7
     mixed_precision: "bf16"
     enable_tf32: True
     seed: 10086
@@ -123,5 +132,6 @@ training:
     guidance_scale: 1.5
     generation_timesteps: 12
     t2i_coeff: 1.0
+    mmug_coeff: 1.0  # multi-modal understanding for gene expression data loss coefficient
     lm_coeff: 0.1
     mmu_coeff: 1.0

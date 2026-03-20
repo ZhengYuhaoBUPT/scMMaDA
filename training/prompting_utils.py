@@ -15,11 +15,12 @@
 
 
 reserved_token_mapping = {
-    '<|soi|>': 126084,  
+    '<|soi|>': 126084,
     '<|eoi|>': 126085,
     '<|sov|>': 126086,
     '<|eov|>': 126087,
     '<|t2i|>': 126088,
+    '<|mmug|>': 126464,  # multi-modal understanding for gene expression data
     '<|mmu|>': 126089,
     '<|t2v|>': 126090,
     '<|v2v|>': 126091,
@@ -32,7 +33,7 @@ reserved_token_mapping = {
 import torch
 class UniversalPrompting():
     def __init__(self, text_tokenizer,
-                 special_tokens=("<|soi|>", "<|eoi|>", "<|sov|>", "<|eov|>", "<|t2i|>", "<|mmu|>", "<|t2v|>", "<|v2v|>", "<|lvg|>"),
+                 special_tokens=("<|soi|>", "<|eoi|>", "<|sov|>", "<|eov|>", "<|t2i|>", "<|mmug|>", "<|mmu|>", "<|t2v|>", "<|v2v|>", "<|lvg|>"),
                  max_text_len=8000, max_seq_len=377, ignore_id=-100, cond_dropout_prob=0.1, use_reserved_token=False):
         """
         :param text_tokenizer: original text tokenizer
@@ -166,6 +167,110 @@ class UniversalPrompting():
             attention_masks.append(temp_masks.unsqueeze(0))
 
         return torch.cat(sequence_ids, dim=0), torch.cat(attention_masks, dim=0)
+
+    def mmug_prompt(self, gene_ids, text_ids):
+        """
+        Multi-modal understanding for gene expression data.
+        Similar to mmu_prompt but for gene tokens.
+        Format: <|mmug|> <|soi|> [gene_tokens] <|eoi|> <bos> [text_tokens] <eos>
+        """
+        device = gene_ids.device
+        sequence_ids = []
+        prompt_masks = []
+        label_ids = []
+        max_text_len = self.max_text_len - 1
+        for i in range(len(text_ids)):
+            if len(text_ids[i]) == 0:
+                text_ids[i] = [self.text_tokenizer.bos_token_id]
+            elif text_ids[i][0] != self.text_tokenizer.bos_token_id:
+                text_ids[i] = [self.text_tokenizer.bos_token_id] + text_ids[i]
+
+            temp_ids = text_ids[i] + [self.text_tokenizer.eos_token_id]
+
+            if max_text_len >= len(temp_ids):
+                temp_ids = temp_ids + [self.text_tokenizer.eos_token_id] * (max_text_len - len(temp_ids))
+                temp_masks = [1] * (len(temp_ids) + gene_ids.shape[-1] + 3) + [0] * (max_text_len - len(temp_ids))
+            else:
+                temp_ids = temp_ids[:max_text_len - 1] + [self.text_tokenizer.eos_token_id]
+                temp_masks = [1] * (len(temp_ids) + gene_ids.shape[-1] + 3)
+
+            # prompting -- <|mmug|> <|soi|> [gene_tokens] <|eoi|> <bos> [text_tokens] <eos>
+            temp_label_ids = torch.cat([
+                torch.tensor([self.ignore_id]).to(device),  # <|mmug|>
+                torch.tensor([self.ignore_id]).to(device),  # <|soi|>
+                torch.ones_like(gene_ids[i]) * self.ignore_id,  # gene tokens
+                torch.tensor([self.ignore_id]).to(device),  # <|eoi|>
+                torch.tensor(temp_ids).to(device),  # text tokens
+            ], dim=0)
+
+            temp_label_ids = torch.where(temp_label_ids == self.pad_id, self.ignore_id, temp_label_ids)
+
+            return_temp_ids = torch.cat([
+                self.sptids_dict['<|mmug|>'].to(device),  # task token
+                self.sptids_dict['<|soi|>'].to(device),
+                gene_ids[i],
+                self.sptids_dict['<|eoi|>'].to(device),
+                torch.tensor(temp_ids).to(device),
+            ], dim=0)
+
+            end_header_id = int(self.sptids_dict['<|end_header_id|>'])
+            end_header_pos = -1
+            for pos in range(len(temp_ids) - 1, -1, -1):
+                if temp_ids[pos] == end_header_id:
+                    end_header_pos = pos
+                    break
+            if end_header_pos != -1:
+                prompt_length = len(return_temp_ids) - len(temp_ids) + end_header_pos + 1
+            else:
+                prompt_length = len(return_temp_ids) - len(temp_ids)
+            predict_length = len(return_temp_ids) - prompt_length
+            prompt_mask = [1] * prompt_length + [0] * predict_length
+            prompt_mask = torch.tensor(prompt_mask).to(device)
+            sequence_ids.append(return_temp_ids.unsqueeze(0))
+            prompt_masks.append(prompt_mask.unsqueeze(0))
+            label_ids.append(temp_label_ids.unsqueeze(0))
+
+        return torch.cat(sequence_ids, dim=0), torch.cat(prompt_masks, dim=0), torch.cat(label_ids, dim=0)
+
+    def mmug_gen_prompt(self, gene_ids, text_ids):
+        """
+        Multi-modal understanding generation for gene expression data.
+        Format: <|mmug|> <|soi|> [gene_tokens] <|eoi|> <bos> [text_tokens] <eos>
+        """
+        device = gene_ids.device
+        sequence_ids = []
+        prompt_masks = []
+        max_text_len = self.max_text_len - 1
+        for i in range(len(text_ids)):
+            if len(text_ids[i]) == 0:
+                text_ids[i] = [self.text_tokenizer.bos_token_id]
+            elif text_ids[i][0] != self.text_tokenizer.bos_token_id:
+                text_ids[i] = [self.text_tokenizer.bos_token_id] + text_ids[i]
+
+            temp_ids = text_ids[i] + [self.text_tokenizer.eos_token_id]
+
+            if max_text_len >= len(temp_ids):
+                temp_ids = temp_ids + [self.text_tokenizer.eos_token_id] * (max_text_len - len(temp_ids))
+                temp_masks = [1] * (len(temp_ids) + gene_ids.shape[-1] + 3) + [0] * (max_text_len - len(temp_ids))
+            else:
+                # should add eos token
+                temp_ids = temp_ids[:self.max_text_len - 1] + [self.text_tokenizer.eos_token_id]
+                temp_masks = [1] * (len(temp_ids) + gene_ids.shape[-1] + 2)
+
+            # prompting -- <|mmug|> <|soi|> [gene_tokens] <|eoi|> <bos> [text_tokens] <eos>
+            return_temp_ids = torch.cat([
+                self.sptids_dict['<|mmug|>'].to(device),  # <|mmug|>
+                self.sptids_dict['<|soi|>'].to(device),  # <|soi|>
+                gene_ids[i],  # gene tokens
+                self.sptids_dict['<|eoi|>'].to(device),  # <|eoi|>
+                torch.tensor(temp_ids).to(device),  # text tokens
+            ], dim=0)
+
+            temp_masks = torch.tensor(temp_masks).to(device)
+            sequence_ids.append(return_temp_ids.unsqueeze(0))
+            prompt_masks.append(temp_masks.unsqueeze(0))
+
+        return torch.cat(sequence_ids, dim=0), torch.cat(prompt_masks, dim=0)
 
     # language modeling
     def lm_prompt(self, text_ids, max_seq_len):
@@ -441,6 +546,16 @@ class UniversalPrompting():
             text_ids = self.text_tokenizer(input[0])['input_ids']  # (B, max_len)
             image_ids = input[1]  # (B, #tokens)
             sequence_ids_with_masks = self.t2i_gen_prompt(text_ids, image_ids)
+
+        elif task == "mmug":
+            text_ids = self.text_tokenizer(input[0])['input_ids']  # (B, max_len)
+            gene_ids = input[1]  # (B, #gene_tokens)
+            sequence_ids_with_masks = self.mmug_prompt(gene_ids, text_ids)
+
+        elif task == "mmug_gen":
+            text_ids = self.text_tokenizer(input[0])['input_ids']  # (B, max_len)
+            gene_ids = input[1]  # (B, #gene_tokens)
+            sequence_ids_with_masks = self.mmug_gen_prompt(gene_ids, text_ids)
 
         elif task == "t2v_gen":
             text_ids = self.text_tokenizer(input[0])['input_ids']  # (B, max_len)

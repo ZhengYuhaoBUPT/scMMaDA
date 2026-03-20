@@ -168,7 +168,7 @@ def main():
     uni_prompting = UniversalPrompting(tokenizer, max_text_len=config.dataset.preprocessing.max_seq_length,
                                        special_tokens=(
                                            "<|soi|>", "<|eoi|>", "<|sov|>", "<|eov|>", "<|t2i|>",
-                                           "<|g2t|>",  # gene-to-text token for CellwText
+                                           "<|mmug|>",  # multi-modal understanding for gene expression data
                                            "<|mmu|>", "<|t2v|>", "<|v2v|>", "<|lvg|>"
                                        ),
                                        ignore_id=-100, cond_dropout_prob=config.training.cond_dropout_prob, use_reserved_token=True)
@@ -377,7 +377,7 @@ def main():
 
     # CellwText gene-to-text dataset
     if hasattr(dataset_config, 'train_g2t_lmdb_path') and dataset_config.train_g2t_lmdb_path is not None:
-        dataset_g2t = CellwTextDataset(
+        dataset_mmug = CellwTextDataset(
             lmdb_paths=dataset_config.train_g2t_lmdb_path,
             gene_vocab_path=dataset_config.get('gene_vocab_path', ''),
             celltype_label_path=dataset_config.get('celltype_label_path', None),
@@ -386,19 +386,19 @@ def main():
             max_gene_tokens=dataset_config.get('max_gene_tokens', 2000),
             num_expression_bins=dataset_config.get('num_expression_bins', 51),
             lmdb_vocab_path=dataset_config.get('lmdb_vocab_path', None),
-            batch_size=config.training.batch_size_g2t if hasattr(config.training, 'batch_size_g2t') else config.training.batch_size_t2i,
+            batch_size=config.training.batch_size_mmug if hasattr(config.training, "batch_size_mmug") else (config.training.batch_size_g2t if hasattr(config.training, "batch_size_g2t") else config.training.batch_size_t2i),
             num_workers=dataset_config.num_workers,
             shuffle=True,
             pin_memory=dataset_config.pin_memory,
         )
-        train_dataloader_g2t = dataset_g2t.get_dataloader()
-        total_batch_size_g2t = (
-            train_dataloader_g2t.batch_size * accelerator.num_processes * config.training.gradient_accumulation_steps
+        train_dataloader_mmug = dataset_mmug.get_dataloader()
+        total_batch_size_mmug = (
+            train_dataloader_mmug.batch_size * accelerator.num_processes * config.training.gradient_accumulation_steps
         )
-        num_update_steps_per_epoch_g2t = math.ceil(len(dataset_g2t) / total_batch_size_g2t)
+        num_update_steps_per_epoch_mmug = math.ceil(len(dataset_mmug) / total_batch_size_mmug)
     else:
-        train_dataloader_g2t = None
-        num_update_steps_per_epoch_g2t = None
+        train_dataloader_mmug = None
+        num_update_steps_per_epoch_mmug = None
 
     # LLM pure text dataset: RefinedWeb
     dataset_lm = RefinedWebDataset(data_path=dataset_config.train_lm_shards_path_or_url,
@@ -416,8 +416,8 @@ def main():
         "lm_flow": train_dataloader_lm,
         "mmu_flow": train_dataloader_mmu,
     }
-    if train_dataloader_g2t is not None:
-        iterables["g2t_flow"] = train_dataloader_g2t  # gene-to-text flow
+    if train_dataloader_mmug is not None:
+        iterables["mmug_flow"] = train_dataloader_mmug  # multi-modal understanding for gene data
 
     combined_dataloader = CombinedLoader(iterables, mode=config.dataset.combined_loader_mode)
 
@@ -553,7 +553,7 @@ def main():
         for batch, batch_idx, dataloader_idx in combined_dataloader:
             # for loss calculation
             batch_size_t2i = batch["t2i_flow"]["images"].shape[0] if "t2i_flow" in batch else 0
-            batch_size_g2t = batch["g2t_flow"]["gene_ids"].shape[0] if "g2t_flow" in batch else 0
+            batch_size_mmug = batch["mmug_flow"]["gene_ids"].shape[0] if "mmug_flow" in batch else 0
             batch_size_lm = len(batch["lm_flow"]["input_ids"])
             batch_size_mmu = batch["mmu_flow"]["images"].shape[0] if "mmu_flow" in batch else 0
 
@@ -592,33 +592,30 @@ def main():
             # *-------*-------*-------*-------*-------*-------*-------*-------*-------*
             # Build formatted sequences for gene-to-text
             # *-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*
-            if "g2t_flow" in batch:
-                gene_ids = batch["g2t_flow"]["gene_ids"].to(accelerator.device, non_blocking=True)
-                texts_g2t = batch["g2t_flow"].get("texts", [""] * gene_ids.shape[0])
+            if "mmug_flow" in batch:
+                gene_ids = batch["mmug_flow"]["gene_ids"].to(accelerator.device, non_blocking=True)
+                texts_mmug = batch["mmug_flow"].get("texts", [""] * gene_ids.shape[0])
 
-                # Create labels for gene-to-text (we predict text from gene expression)
-                texts_g2t_tokenized = [tokenizer(text.strip())['input_ids'] for text in texts_g2t]
-                max_text_len = max([len(t) for t in texts_g2t_tokenized]) if texts_g2t_tokenized else 0
+                # Use UniversalPrompting for mmug task (similar to mmu)
+                input_ids_mmug, prompt_masks_mmug, labels_mmug = uni_prompting((gene_ids, texts_mmug), 'mmug')
+                (
+                    input_ids_mmug,  
+                    labels_mmug,
+                    p_mask_mmug,
+                    answer_lengths_mmug,
+                ) = prepare_inputs_and_labels_for_mmu(input_ids_mmug, prompt_masks_mmug, labels_mmug)
+                input_ids_mmug = input_ids_mmug.to(accelerator.device, non_blocking=True)
 
-                # Pad text token IDs
-                padded_text_token_ids = []
-                for text_ids_item in texts_g2t_tokenized:
-                    if len(text_ids_item) < config.dataset.preprocessing.max_seq_length:
-                        padded = text_ids_item + [tokenizer.pad_token_id] * (config.dataset.preprocessing.max_seq_length - len(text_ids_item))
-                    else:
-                        padded = text_ids_item[:config.dataset.preprocessing.max_seq_length]
-                    padded_text_token_ids.append(padded)
+                input_ids = torch.cat((input_ids, input_ids_mmug.to(input_ids.device)), dim=0)
+                labels = torch.cat((labels, labels_mmug.to(input_ids.device)), dim=0)
 
-                texts_g2t_tokenized = torch.stack(padded_text_token_ids, dim=0)
-
-                # Create labels (text tokens are predicted)
-                labels_g2t = texts_g2t_tokenized.clone()
-
-                # Use UniversalPrompting for g2t task
-                input_ids_g2t, labels_g2t_prompt, _ = uni_prompting((texts_g2t_tokenized, gene_ids, labels_g2t), 'g2t')
-
-                input_ids = torch.cat((input_ids, input_ids_g2t.to(input_ids.device)), dim=0)
-                labels = torch.cat((labels, labels_g2t_prompt.to(input_ids.device)), dim=0)
+            # Initialize mmug mask parameters
+            if "mmug_flow" in batch:
+                # p_mask_mmug and answer_lengths_mmug are already set in the mmug processing section
+                pass
+            else:
+                p_mask_mmug = None
+                answer_lengths_mmug = None
 
             # *-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*
             # Build formatted sequences for captioning/multimodal understanding
@@ -672,27 +669,29 @@ def main():
                 logger.info("Labels: {}".format(labels))
 
             with accelerator.accumulate(model):
-                logits, loss_t2i, loss_lm, loss_mmu, loss_g2t = model.forward_process(
+                logits, loss_t2i, loss_lm, loss_mmu, loss_mmug = model.forward_process(
                     input_ids=input_ids,
                     labels=labels,
                     batch_size_t2i=batch_size_t2i,
-                    batch_size_g2t=batch_size_g2t,
+                    batch_size_mmug=batch_size_mmug,
                     batch_size_lm=batch_size_lm,
                     batch_size_mmu=batch_size_mmu,
                     max_seq_length=config.dataset.preprocessing.max_seq_length,
                     p_mask_lm=p_mask_lm,
-                    p_mask_mmu=p_mask_mmu,  
+                    p_mask_mmu=p_mask_mmu,
+                    p_mask_mmug=p_mask_mmug,
                     answer_lengths=answer_lengths,
+                    answer_lengths_mmug=answer_lengths_mmug,
                     t2i_masks=t2i_masks
                 )
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss_t2i = accelerator.gather(loss_t2i.repeat(config.training.batch_size_t2i)).mean()
-                avg_loss_g2t = accelerator.gather(loss_g2t.repeat(config.training.batch_size_g2t)).mean() if batch_size_g2t > 0 else torch.tensor(0.0)
+                avg_loss_mmug = accelerator.gather(loss_mmug.repeat((config.training.batch_size_mmug if hasattr(config.training, "batch_size_mmug") else (config.training.batch_size_g2t if hasattr(config.training, "batch_size_g2t") else config.training.batch_size_t2i)))).mean() if batch_size_mmug > 0 else torch.tensor(0.0)
                 avg_loss_lm = accelerator.gather(loss_lm.repeat(config.training.batch_size_lm)).mean()
                 avg_loss_mmu = accelerator.gather(loss_mmu.repeat(config.training.batch_size_mmu)).mean()
-                loss_g2t = torch.tensor(0.0, device=loss_t2i.device) if batch_size_g2t == 0 else loss_g2t
+                loss_mmug = torch.tensor(0.0, device=loss_t2i.device) if batch_size_mmug == 0 else loss_mmug
                 loss = config.training.t2i_coeff * loss_t2i + \
-                       config.training.g2t_coeff * loss_g2t + \
+                       (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff) * loss_mmug + \
                        config.training.lm_coeff * loss_lm + \
                        config.training.mmu_coeff * loss_mmu
 
@@ -729,7 +728,7 @@ def main():
                     )
                     logs = {
                         "step_loss_t2i": avg_loss_t2i.item(),
-                        "step_loss_g2t": avg_loss_g2t.item(),
+                        "step_loss_mmug": avg_loss_mmug.item(),
                         "step_loss_mmu": avg_loss_mmu.item(),
                         "step_loss_lm": avg_loss_lm.item(),
                         "lr": lr_scheduler.get_last_lr()[0],
@@ -743,7 +742,7 @@ def main():
                     logger.info(
                         f"Step: {global_step + 1} "
                         f"Loss_t2i: {avg_loss_t2i.item():0.4f} "
-                        f"Loss_g2t: {avg_loss_g2t.item():0.4f} "
+                        f"Loss_mmug: {avg_loss_mmug.item():0.4f} "
                         f"Loss_mmu: {avg_loss_mmu.item():0.4f} "
                         f"Loss_lm: {avg_loss_lm.item():0.4f} "
                         f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "

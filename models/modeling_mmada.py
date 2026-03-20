@@ -215,12 +215,15 @@ class MMadaModelLM(LLaDAModelLM):
             input_ids, 
             labels,
             batch_size_t2i=0,
+            batch_size_mmug=0,
             batch_size_lm=0,
             batch_size_mmu=0,
             max_seq_length=128,
             p_mask_lm=None,
             p_mask_mmu=None,
+            p_mask_mmug=None,
             answer_lengths=None,
+            answer_lengths_mmug=None,
             t2i_masks=None,
             answer_lengths_lm=None
             ):
@@ -228,6 +231,7 @@ class MMadaModelLM(LLaDAModelLM):
         attention_bias = torch.ones(input_ids.shape[0], 1, input_ids.shape[1], input_ids.shape[1], device=input_ids.device)
         attention_bias_t2i = (t2i_masks[:, :, None] & t2i_masks[:, None, :]).bool().unsqueeze(1)
         attention_bias[:batch_size_t2i] = attention_bias_t2i
+        attention_bias[:batch_size_mmug] = attention_bias_t2i  # mmug uses same attention as t2i
         logits = self(input_ids, attention_bias=attention_bias).logits 
         self.output_size = logits.shape[-1]
 
@@ -263,8 +267,27 @@ class MMadaModelLM(LLaDAModelLM):
             labels[-batch_size_mmu:][masked_indices_mmu].contiguous().view(-1), ignore_index=-100, reduction='none'
             )/p_mask_mmu[masked_indices_mmu]
         loss_mmu = torch.sum(loss_mmu/answer_lengths[masked_indices_mmu]) / (logits[-batch_size_mmu:].shape[0])
+
+        # mmug loss calculation (similar to mmu)
+        start_mmug = batch_size_t2i + batch_size_lm
+        end_mmug = start_mmug + batch_size_mmug
+        masked_indices_mmug = masked_indices[start_mmug:end_mmug]
         
-        return logits, loss_t2i, loss_lm, loss_mmu
+        if batch_size_mmug == 0 or p_mask_mmug is None:
+            loss_mmug = torch.tensor(0.0, device=input_ids.device)
+        else:
+            p_mask_mmug_for_loss = p_mask_mmug.to(masked_indices_mmug.device)
+            answer_lengths_mmug_for_loss = answer_lengths_mmug.to(masked_indices_mmug.device) if answer_lengths_mmug is not None else None
+            loss_mmug = F.cross_entropy(
+                logits[start_mmug:end_mmug][masked_indices_mmug].contiguous().view(-1, self.output_size),
+                labels[start_mmug:end_mmug][masked_indices_mmug].contiguous().view(-1), ignore_index=-100, reduction='none'
+                )/p_mask_mmug_for_loss[masked_indices_mmug]
+            if answer_lengths_mmug_for_loss is not None:
+                loss_mmug = torch.sum(loss_mmug/answer_lengths_mmug_for_loss[masked_indices_mmug]) / (logits[start_mmug:end_mmug].shape[0])
+            else:
+                loss_mmug = loss_mmug.mean()
+
+        return logits, loss_t2i, loss_mmug, loss_lm, loss_mmu
 
     def forward_process_with_r2i(
             self,
@@ -287,6 +310,7 @@ class MMadaModelLM(LLaDAModelLM):
         attention_bias = torch.ones(input_ids.shape[0], 1, input_ids.shape[1], input_ids.shape[1])
         attention_bias_t2i = (t2i_masks[:, :, None] & t2i_masks[:, None, :]).bool().unsqueeze(1)
         attention_bias[:batch_size_t2i] = attention_bias_t2i
+        attention_bias[:batch_size_mmug] = attention_bias_t2i  # mmug uses same attention as t2i
         logits = self(input_ids, attention_bias=attention_bias).logits 
         # logits = self(input_ids).logits
         self.output_size = logits.shape[-1]
@@ -359,6 +383,7 @@ class MMadaModelLM(LLaDAModelLM):
         attention_bias = torch.ones(input_ids.shape[0], 1, input_ids.shape[1], input_ids.shape[1])
         attention_bias_t2i = (t2i_masks[:, :, None] & t2i_masks[:, None, :]).bool().unsqueeze(1)
         attention_bias[:batch_size_t2i] = attention_bias_t2i
+        attention_bias[:batch_size_mmug] = attention_bias_t2i  # mmug uses same attention as t2i
         logits = self(input_ids, attention_bias=attention_bias).logits 
         # logits = self(input_ids).logits
         self.output_size = logits.shape[-1]

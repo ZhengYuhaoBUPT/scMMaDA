@@ -503,3 +503,188 @@ class Text2ImageDataset:
 
 if __name__ == '__main__':
     pass
+
+
+class CellwTextDataset:
+    """
+    Dataset for CellwText single-cell multimodal data.
+    Supports gene-to-text (g2t) training with gene expression data.
+    """
+    def __init__(
+            self,
+            lmdb_paths: Union[str, List[str]],
+            gene_vocab_path: str,
+            celltype_label_path: Optional[str] = None,
+            tokenizer: Optional[PreTrainedTokenizer] = None,
+            max_seq_length: int = 128,
+            max_gene_tokens: int = 2000,
+            num_expression_bins: int = 51,
+            lmdb_vocab_path: Optional[str] = None,
+            batch_size: int = 4,
+            num_workers: int = 4,
+            shuffle: bool = True,
+            pin_memory: bool = False,
+    ):
+        """
+        Args:
+            lmdb_paths: Path(s) to LMDB files containing gene expression data
+            gene_vocab_path: Path to scgpt gene vocabulary file
+            celltype_label_path: Optional path to cell type labels
+            tokenizer: Text tokenizer for processing text descriptions
+            max_seq_length: Maximum sequence length for text tokens
+            max_gene_tokens: Maximum number of gene tokens per sample
+            num_expression_bins: Number of bins for expression values
+            lmdb_vocab_path: Path to LMDB vocabulary for ID mapping
+            batch_size: Batch size for dataloader
+            num_workers: Number of workers for dataloader
+            shuffle: Whether to shuffle the dataset
+            pin_memory: Whether to pin memory for faster data transfer
+        """
+        import lmdb
+        import json
+
+        self.lmdb_paths = lmdb_paths if isinstance(lmdb_paths, list) else [lmdb_paths]
+        self.max_seq_length = max_seq_length
+        self.max_gene_tokens = max_gene_tokens
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.shuffle = shuffle
+        self.pin_memory = pin_memory
+
+        # Load scgpt gene vocabulary
+        with open(gene_vocab_path, 'r') as f:
+            gene_vocab = json.load(f)
+        self.gene_vocab = {gene: idx for idx, gene in gene_vocab.items()}
+
+        # Load LMDB vocabulary for ID mapping
+        if lmdb_vocab_path is not None and os.path.exists(lmdb_vocab_path):
+            with open(lmdb_vocab_path, 'r') as f:
+                lmdb_vocab = json.load(f)
+            # LMDB uses integer IDs (e.g., 12292, 8205)
+            # Need to map to scgpt gene IDs
+            self.lmdb_id2gene = {v: k for k, v in lmdb_vocab.items()}
+            self.lmdb_id2scgpt_id = {
+                lmdb_id: self.gene_vocab[gene_name]
+                for lmdb_id, gene_name in self.lmdb_id2gene.items()
+                if gene_name in self.gene_vocab
+            }
+        else:
+            # If no LMDB vocab, assume LMDB IDs directly match scgpt IDs
+            self.lmdb_id2scgpt_id = None
+
+        # Load cell type labels if provided
+        self.celltype_labels = None
+        if celltype_label_path is not None and os.path.exists(celltype_label_path):
+            with open(celltype_label_path, 'r') as f:
+                self.celltype_labels = json.load(f)
+
+        # Open LMDB environments
+        self.envs = []
+        for lmdb_path in self.lmdb_paths:
+            env = lmdb.open(lmdb_path, readonly=True, lock=False)
+            self.envs.append(env)
+
+        # Get total number of samples
+        self.length = 0
+        for env in self.envs:
+            with env.begin() as txn:
+                self.length += txn.stat()['entries']
+
+        print(f"CellwTextDataset initialized with {len(self.envs)} LMDB(s), total samples: {self.length}")
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        import lmdb
+        import torch
+
+        # Find which LMDB contains this sample
+        samples_per_env = self.length // len(self.envs)
+        env_idx = idx // samples_per_env
+        local_idx = idx % samples_per_env
+
+        env = self.envs[env_idx]
+
+        with env.begin() as txn:
+            key = f'{local_idx:010d}'.encode('ascii')
+            value = txn.get(key)
+
+            if value is None:
+                raise IndexError(f"Index {idx} not found in LMDB")
+
+            # Parse LMDB data
+            # Expected format: gene_ids (list of ints), expression_bins (list of ints)
+            import msgpack
+            data = msgpack.unpackb(value, raw=False)
+
+            gene_ids_lmdb = data.get('gene_ids', [])
+            expression_bins = data.get('expression_bins', [])
+
+            # Truncate to max_gene_tokens
+            gene_ids_lmdb = gene_ids_lmdb[:self.max_gene_tokens]
+            expression_bins = expression_bins[:self.max_gene_tokens]
+
+            # Map LMDB IDs to scgpt IDs
+            if self.lmdb_id2scgpt_id is not None:
+                gene_ids = []
+                for lmdb_id in gene_ids_lmdb:
+                    if lmdb_id in self.lmdb_id2scgpt_id:
+                        gene_ids.append(self.lmdb_id2scgpt_id[lmdb_id])
+                    else:
+                        # Skip genes not in scgpt vocab
+                        pass
+                # Pad to maintain fixed size
+                while len(gene_ids) < self.max_gene_tokens:
+                    gene_ids.append(0)  # Use 0 or special padding token
+            else:
+                gene_ids = torch.tensor(gene_ids_lmdb, dtype=torch.long)
+
+        return {
+            'gene_ids': torch.tensor(gene_ids, dtype=torch.long),
+            'gene_expression': torch.tensor(expression_bins, dtype=torch.long),
+            'celltype_label': self.celltype_labels.get(idx, 0) if self.celltype_labels else 0,
+        }
+
+    def collate_fn(self, batch):
+        """
+        Collate function for batching gene expression data.
+        """
+        import torch
+
+        # Stack gene IDs and expression values
+        gene_ids = torch.stack([item['gene_ids'] for item in batch])
+        gene_expression = torch.stack([item['gene_expression'] for item in batch])
+        celltype_label = torch.stack([item['celltype_label'] for item in batch])
+
+        return {
+            'gene_ids': gene_ids,
+            'gene_expression': gene_expression,
+            'celltype_label': celltype_label,
+        }
+
+    def get_dataloader(self):
+        """
+        Returns a DataLoader for this dataset.
+        """
+        from torch.utils.data import DataLoader
+
+        sampler = None
+        if self.shuffle:
+            from torch.utils.data import RandomSampler
+            sampler = RandomSampler(self)
+
+        return DataLoader(
+            self,
+            batch_size=self.batch_size,
+            sampler=sampler,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            collate_fn=self.collate_fn,
+        )
+
+    def close(self):
+        """Close all LMDB environments."""
+        for env in self.envs:
+            env.close()
+        self.envs = []
