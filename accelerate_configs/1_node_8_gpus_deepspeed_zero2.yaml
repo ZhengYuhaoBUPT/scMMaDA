@@ -12,8 +12,8 @@ downcast_bf16: 'no'
 main_training_function: main
 mixed_precision: bf16
 num_machines: 1
-gpu_ids: '2,3,4,5'
-num_processes: 4
+gpu_ids: '0' # '2,3,4,5'
+num_processes: 1 # 4
 rdzv_backend: static
 same_network: true
 tpu_env: []

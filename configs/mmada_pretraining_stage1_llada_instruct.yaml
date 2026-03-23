@@ -48,6 +48,8 @@ dataset:
         train_g2t_lmdb_path: null  # Path to CellwText LMDB data (config name kept for compatibility)
         gene_vocab_path: ""  # Path to scgpt gene vocabulary
         celltype_label_path: null  # Optional path to cell type labels
+        cell_metadata_path: null  # Optional json/csv/tsv metadata with celltype/disease/tissue
+        caption_template: null  # Optional format template, e.g. 'This cell is a {celltype}{disease_clause}{tissue_clause}.'
         lmdb_vocab_path: null  # Path to LMDB vocabulary for ID mapping
         max_gene_tokens: 2000  # Maximum number of gene tokens per sample
         num_expression_bins: 51  # Number of bins for expression values

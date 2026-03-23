@@ -386,6 +386,8 @@ def main():
             max_gene_tokens=dataset_config.get('max_gene_tokens', 2000),
             num_expression_bins=dataset_config.get('num_expression_bins', 51),
             lmdb_vocab_path=dataset_config.get('lmdb_vocab_path', None),
+            cell_metadata_path=dataset_config.get('cell_metadata_path', None),
+            caption_template=dataset_config.get('caption_template', None),
             batch_size=config.training.batch_size_g2t if hasattr(config.training, 'batch_size_g2t') else config.training.batch_size_t2i,
             num_workers=dataset_config.num_workers,
             shuffle=True,

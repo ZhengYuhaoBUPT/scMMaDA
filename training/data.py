@@ -508,7 +508,7 @@ if __name__ == '__main__':
 class CellwTextDataset:
     """
     Dataset for CellwText single-cell multimodal data.
-    Supports gene-to-text (g2t) training with gene expression data.
+    Supports gene-to-text (g2t/mmug) training with gene expression data.
     """
     def __init__(
             self,
@@ -520,36 +520,33 @@ class CellwTextDataset:
             max_gene_tokens: int = 2000,
             num_expression_bins: int = 51,
             lmdb_vocab_path: Optional[str] = None,
+            cell_metadata_path: Optional[str] = None,
+            caption_template: Optional[str] = None,
             batch_size: int = 4,
             num_workers: int = 4,
             shuffle: bool = True,
             pin_memory: bool = False,
     ):
-        """
-        Args:
-            lmdb_paths: Path(s) to LMDB files containing gene expression data
-            gene_vocab_path: Path to scgpt gene vocabulary file
-            celltype_label_path: Optional path to cell type labels
-            tokenizer: Text tokenizer for processing text descriptions
-            max_seq_length: Maximum sequence length for text tokens
-            max_gene_tokens: Maximum number of gene tokens per sample
-            num_expression_bins: Number of bins for expression values
-            lmdb_vocab_path: Path to LMDB vocabulary for ID mapping
-            batch_size: Batch size for dataloader
-            num_workers: Number of workers for dataloader
-            shuffle: Whether to shuffle the dataset
-            pin_memory: Whether to pin memory for faster data transfer
-        """
         import lmdb
-        import json
 
-        self.lmdb_paths = lmdb_paths if isinstance(lmdb_paths, list) else [lmdb_paths]
+        if isinstance(lmdb_paths, list):
+            self.lmdb_paths = lmdb_paths
+        elif isinstance(lmdb_paths, str) and os.path.isdir(lmdb_paths):
+            self.lmdb_paths = sorted([
+                os.path.join(lmdb_paths, p)
+                for p in os.listdir(lmdb_paths)
+                if p.endswith('.db') and os.path.isdir(os.path.join(lmdb_paths, p))
+            ])
+        else:
+            self.lmdb_paths = [lmdb_paths]
         self.max_seq_length = max_seq_length
         self.max_gene_tokens = max_gene_tokens
+        self.num_expression_bins = num_expression_bins
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.shuffle = shuffle
         self.pin_memory = pin_memory
+        self.caption_template = caption_template
 
         # Load scgpt gene vocabulary
         with open(gene_vocab_path, 'r') as f:
@@ -560,8 +557,6 @@ class CellwTextDataset:
         if lmdb_vocab_path is not None and os.path.exists(lmdb_vocab_path):
             with open(lmdb_vocab_path, 'r') as f:
                 lmdb_vocab = json.load(f)
-            # LMDB uses integer IDs (e.g., 12292, 8205)
-            # Need to map to scgpt gene IDs
             self.lmdb_id2gene = {v: k for k, v in lmdb_vocab.items()}
             self.lmdb_id2scgpt_id = {
                 lmdb_id: self.gene_vocab[gene_name]
@@ -569,98 +564,215 @@ class CellwTextDataset:
                 if gene_name in self.gene_vocab
             }
         else:
-            # If no LMDB vocab, assume LMDB IDs directly match scgpt IDs
             self.lmdb_id2scgpt_id = None
 
-        # Load cell type labels if provided
+        # Optional celltype labels
         self.celltype_labels = None
         if celltype_label_path is not None and os.path.exists(celltype_label_path):
             with open(celltype_label_path, 'r') as f:
                 self.celltype_labels = json.load(f)
 
-        # Open LMDB environments
+        # Optional metadata table for captions: supports json/csv/tsv
+        self.cell_metadata = None
+        if cell_metadata_path is not None and os.path.exists(cell_metadata_path):
+            if cell_metadata_path.endswith('.json'):
+                with open(cell_metadata_path, 'r') as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, list):
+                    self.cell_metadata = {str(i): row for i, row in enumerate(loaded)}
+                elif isinstance(loaded, dict):
+                    self.cell_metadata = loaded
+            elif cell_metadata_path.endswith('.csv') or cell_metadata_path.endswith('.tsv'):
+                sep = '\t' if cell_metadata_path.endswith('.tsv') else ','
+                df = pd.read_csv(cell_metadata_path, sep=sep)
+                if 'idx' in df.columns:
+                    self.cell_metadata = {str(row['idx']): row.to_dict() for _, row in df.iterrows()}
+                elif 'index' in df.columns:
+                    self.cell_metadata = {str(row['index']): row.to_dict() for _, row in df.iterrows()}
+                else:
+                    self.cell_metadata = {str(i): row.to_dict() for i, row in df.iterrows()}
+
+        # Open LMDB environments and cache lengths
         self.envs = []
+        self.env_lengths = []
+        self.length = 0
         for lmdb_path in self.lmdb_paths:
             env = lmdb.open(lmdb_path, readonly=True, lock=False)
             self.envs.append(env)
-
-        # Get total number of samples
-        self.length = 0
-        for env in self.envs:
             with env.begin() as txn:
-                self.length += txn.stat()['entries']
+                len_bytes = txn.get(b'__len__')
+                env_len = int(len_bytes.decode('utf-8')) if len_bytes is not None else txn.stat()['entries']
+            self.env_lengths.append(env_len)
+            self.length += env_len
 
         print(f"CellwTextDataset initialized with {len(self.envs)} LMDB(s), total samples: {self.length}")
 
     def __len__(self):
         return self.length
 
+    @staticmethod
+    def _clean_optional_text(value):
+        if value is None:
+            return None
+        value = str(value).strip()
+        if value == '' or value.lower() in {'none', 'null', 'nan', 'unknown'}:
+            return None
+        return value
+
+    def _get_celltype_label(self, idx):
+        if self.celltype_labels is None:
+            return None
+        if isinstance(self.celltype_labels, dict):
+            if str(idx) in self.celltype_labels:
+                return self.celltype_labels[str(idx)]
+            if idx in self.celltype_labels:
+                return self.celltype_labels[idx]
+        return None
+
+    def _get_metadata_row(self, idx):
+        if self.cell_metadata is None:
+            return None
+        if str(idx) in self.cell_metadata:
+            return self.cell_metadata[str(idx)]
+        if idx in self.cell_metadata:
+            return self.cell_metadata[idx]
+        return None
+
+    def _build_caption(self, celltype, disease, tissue):
+        celltype = self._clean_optional_text(celltype)
+        disease = self._clean_optional_text(disease)
+        tissue = self._clean_optional_text(tissue)
+
+        if self.caption_template:
+            disease_clause = f" under {disease} condition" if disease else ""
+            tissue_clause = f" from {tissue}" if tissue else ""
+            try:
+                return self.caption_template.format(
+                    celltype=celltype or "unknown cell",
+                    disease=disease or "",
+                    tissue=tissue or "",
+                    disease_clause=disease_clause,
+                    tissue_clause=tissue_clause,
+                ).strip()
+            except Exception:
+                pass
+
+        if not celltype and not disease and not tissue:
+            return ""
+
+        sentence = "This cell"
+        if celltype:
+            sentence += f" is a {celltype}"
+        if disease:
+            sentence += f" under {disease} condition"
+        if tissue:
+            sentence += f" from {tissue}"
+        return sentence + "."
+
+    def _resolve_env_and_local_idx(self, idx):
+        if idx < 0 or idx >= self.length:
+            raise IndexError(f"Index {idx} out of range for dataset length {self.length}")
+        running = 0
+        for env_idx, env_len in enumerate(self.env_lengths):
+            if idx < running + env_len:
+                return env_idx, idx - running
+            running += env_len
+        raise IndexError(f"Index {idx} could not be resolved")
+
     def __getitem__(self, idx):
-        import lmdb
         import torch
+        import msgpack
 
-        # Find which LMDB contains this sample
-        samples_per_env = self.length // len(self.envs)
-        env_idx = idx // samples_per_env
-        local_idx = idx % samples_per_env
-
+        env_idx, local_idx = self._resolve_env_and_local_idx(idx)
         env = self.envs[env_idx]
 
         with env.begin() as txn:
-            key = f'{local_idx:010d}'.encode('ascii')
-            value = txn.get(key)
-
+            key10 = f'{local_idx:010d}'.encode('ascii')
+            value = txn.get(key10)
             if value is None:
-                raise IndexError(f"Index {idx} not found in LMDB")
+                key9 = f'{local_idx:09d}'.encode('ascii')
+                value = txn.get(key9)
+            if value is None:
+                raise IndexError(f"Index {idx} not found in LMDB (tried 10-digit and 9-digit keys)")
+            try:
+                data = msgpack.unpackb(value, raw=False)
+            except Exception:
+                try:
+                    data = json.loads(value.decode('utf-8'))
+                except Exception as e:
+                    raise ValueError(f"Failed to decode LMDB value at idx {idx}: {e}")
 
-            # Parse LMDB data
-            # Expected format: gene_ids (list of ints), expression_bins (list of ints)
-            import msgpack
-            data = msgpack.unpackb(value, raw=False)
+        gene_ids_lmdb = data.get('gene_ids', [])[:self.max_gene_tokens]
+        expression_bins = data.get('expression_bins', [])[:self.max_gene_tokens]
 
-            gene_ids_lmdb = data.get('gene_ids', [])
-            expression_bins = data.get('expression_bins', [])
+        if len(expression_bins) < len(gene_ids_lmdb):
+            expression_bins = expression_bins + [0] * (len(gene_ids_lmdb) - len(expression_bins))
 
-            # Truncate to max_gene_tokens
-            gene_ids_lmdb = gene_ids_lmdb[:self.max_gene_tokens]
+        if self.lmdb_id2scgpt_id is not None:
+            gene_ids = [self.lmdb_id2scgpt_id[lmdb_id] for lmdb_id in gene_ids_lmdb if lmdb_id in self.lmdb_id2scgpt_id]
+        else:
+            gene_ids = list(gene_ids_lmdb)
+
+        if len(gene_ids) > self.max_gene_tokens:
+            gene_ids = gene_ids[:self.max_gene_tokens]
+        if len(gene_ids) < self.max_gene_tokens:
+            gene_ids = gene_ids + [0] * (self.max_gene_tokens - len(gene_ids))
+
+        if len(expression_bins) > self.max_gene_tokens:
             expression_bins = expression_bins[:self.max_gene_tokens]
+        if len(expression_bins) < self.max_gene_tokens:
+            expression_bins = expression_bins + [0] * (self.max_gene_tokens - len(expression_bins))
 
-            # Map LMDB IDs to scgpt IDs
-            if self.lmdb_id2scgpt_id is not None:
-                gene_ids = []
-                for lmdb_id in gene_ids_lmdb:
-                    if lmdb_id in self.lmdb_id2scgpt_id:
-                        gene_ids.append(self.lmdb_id2scgpt_id[lmdb_id])
-                    else:
-                        # Skip genes not in scgpt vocab
-                        pass
-                # Pad to maintain fixed size
-                while len(gene_ids) < self.max_gene_tokens:
-                    gene_ids.append(0)  # Use 0 or special padding token
-            else:
-                gene_ids = torch.tensor(gene_ids_lmdb, dtype=torch.long)
+        metadata_row = self._get_metadata_row(idx)
+        metadata_celltype = None
+        metadata_disease = None
+        metadata_tissue = None
+        if isinstance(metadata_row, dict):
+            metadata_celltype = metadata_row.get('celltype', metadata_row.get('cell_type', None))
+            metadata_disease = metadata_row.get('disease', None)
+            metadata_tissue = metadata_row.get('tissue', None)
+
+        data_celltype = data.get('celltype', data.get('cell_type', None))
+        data_disease = data.get('disease', None)
+        data_tissue = data.get('tissue', None)
+
+        celltype_label_raw = self._get_celltype_label(idx)
+        caption_celltype = data_celltype if data_celltype is not None else metadata_celltype
+        if caption_celltype is None:
+            caption_celltype = celltype_label_raw
+
+        caption_text = self._build_caption(
+            caption_celltype,
+            data_disease if data_disease is not None else metadata_disease,
+            data_tissue if data_tissue is not None else metadata_tissue,
+        )
+
+        # Keep numeric tensor label for compatibility with existing code.
+        if isinstance(celltype_label_raw, (int, float)):
+            celltype_label_tensor = torch.tensor(int(celltype_label_raw), dtype=torch.long)
+        else:
+            celltype_label_tensor = torch.tensor(-1, dtype=torch.long)
 
         return {
             'gene_ids': torch.tensor(gene_ids, dtype=torch.long),
             'gene_expression': torch.tensor(expression_bins, dtype=torch.long),
-            'celltype_label': self.celltype_labels.get(idx, 0) if self.celltype_labels else 0,
+            'celltype_label': celltype_label_tensor,
+            'texts': caption_text,
         }
 
     def collate_fn(self, batch):
-        """
-        Collate function for batching gene expression data.
-        """
         import torch
 
-        # Stack gene IDs and expression values
         gene_ids = torch.stack([item['gene_ids'] for item in batch])
         gene_expression = torch.stack([item['gene_expression'] for item in batch])
         celltype_label = torch.stack([item['celltype_label'] for item in batch])
+        texts = [item.get('texts', '') for item in batch]
 
         return {
             'gene_ids': gene_ids,
             'gene_expression': gene_expression,
             'celltype_label': celltype_label,
+            'texts': texts,
         }
 
     def get_dataloader(self):

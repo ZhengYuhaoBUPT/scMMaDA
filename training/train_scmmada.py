@@ -386,6 +386,8 @@ def main():
             max_gene_tokens=dataset_config.get('max_gene_tokens', 2000),
             num_expression_bins=dataset_config.get('num_expression_bins', 51),
             lmdb_vocab_path=dataset_config.get('lmdb_vocab_path', None),
+            cell_metadata_path=dataset_config.get('cell_metadata_path', None),
+            caption_template=dataset_config.get('caption_template', None),
             batch_size=config.training.batch_size_mmug if hasattr(config.training, "batch_size_mmug") else (config.training.batch_size_g2t if hasattr(config.training, "batch_size_g2t") else config.training.batch_size_t2i),
             num_workers=dataset_config.num_workers,
             shuffle=True,
@@ -597,7 +599,7 @@ def main():
                 texts_mmug = batch["mmug_flow"].get("texts", [""] * gene_ids.shape[0])
 
                 # Use UniversalPrompting for mmug task (similar to mmu)
-                input_ids_mmug, prompt_masks_mmug, labels_mmug = uni_prompting((gene_ids, texts_mmug), 'mmug')
+                input_ids_mmug, prompt_masks_mmug, labels_mmug = uni_prompting((texts_mmug, gene_ids), 'mmug')
                 (
                     input_ids_mmug,  
                     labels_mmug,
@@ -669,7 +671,7 @@ def main():
                 logger.info("Labels: {}".format(labels))
 
             with accelerator.accumulate(model):
-                logits, loss_t2i, loss_lm, loss_mmu, loss_mmug = model.forward_process(
+                logits, loss_t2i, loss_mmug, loss_lm, loss_mmu = model.forward_process(
                     input_ids=input_ids,
                     labels=labels,
                     batch_size_t2i=batch_size_t2i,
@@ -729,6 +731,8 @@ def main():
                     logs = {
                         "step_loss_t2i": avg_loss_t2i.item(),
                         "step_loss_mmug": avg_loss_mmug.item(),
+                        "mmug_batch_size": int(batch_size_mmug),
+                        "mmug_active": int(batch_size_mmug > 0),
                         "step_loss_mmu": avg_loss_mmu.item(),
                         "step_loss_lm": avg_loss_lm.item(),
                         "lr": lr_scheduler.get_last_lr()[0],
@@ -743,6 +747,7 @@ def main():
                         f"Step: {global_step + 1} "
                         f"Loss_t2i: {avg_loss_t2i.item():0.4f} "
                         f"Loss_mmug: {avg_loss_mmug.item():0.4f} "
+                        f"MMUG_BS: {batch_size_mmug} "
                         f"Loss_mmu: {avg_loss_mmu.item():0.4f} "
                         f"Loss_lm: {avg_loss_lm.item():0.4f} "
                         f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "
@@ -851,9 +856,12 @@ def visualize_predictions(
     pil_images = [Image.fromarray(image) for image in predicted_images]
 
     # Log images
-    wandb_images = [wandb.Image(image, caption=f'mask ratio: {r:0.2f} \n caption: {texts[i]}') for i, (image, r) in
-                    enumerate(zip(pil_images, mask_ratio))]
-    wandb.log({"Original images v.s. Reconstructed images v.s. Predicted images": wandb_images}, step=global_step)
+    try:
+        wandb_images = [wandb.Image(image, caption=f'mask ratio: {r:0.2f} | caption: {texts[i]}') for i, (image, r) in
+                        enumerate(zip(pil_images, mask_ratio))]
+        wandb.log({"Original images v.s. Reconstructed images v.s. Predicted images": wandb_images}, step=global_step)
+    except Exception as e:
+        logger.warning(f"Skipping prediction image logging at step {global_step}: {e}")
 
     model.train()
 
@@ -927,8 +935,11 @@ def generate_images(
     pil_images = [Image.fromarray(image) for image in images]
 
     # Log images
-    wandb_images = [wandb.Image(image, caption=validation_prompts[i]) for i, image in enumerate(pil_images)]
-    wandb.log({"Generated images": wandb_images}, step=global_step)
+    try:
+        wandb_images = [wandb.Image(image, caption=validation_prompts[i]) for i, image in enumerate(pil_images)]
+        wandb.log({"Generated images": wandb_images}, step=global_step)
+    except Exception as e:
+        logger.warning(f"Skipping generated image logging at step {global_step}: {e}")
     
     
 
@@ -992,8 +1003,11 @@ def understanding_images(
     pil_images = [Image.fromarray(image) for image in images]
 
     # Log images
-    wandb_images = [wandb.Image(image, caption=responses[i]) for i, image in enumerate(pil_images)]
-    wandb.log({"Understanding images": wandb_images}, step=global_step)
+    try:
+        wandb_images = [wandb.Image(image, caption=responses[i]) for i, image in enumerate(pil_images)]
+        wandb.log({"Understanding images": wandb_images}, step=global_step)
+    except Exception as e:
+        logger.warning(f"Skipping understanding image logging at step {global_step}: {e}")
 
 
 def save_checkpoint(model, config, accelerator, global_step):
