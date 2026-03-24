@@ -94,13 +94,28 @@ def main():
         split_batches=True,
     )
 
-    total_batch_size_per_gpu = (config.training.batch_size_t2i
-                                + config.training.batch_size_lm
-                                + config.training.batch_size_mmu)
-    total_batch_size = (
-            (config.training.batch_size_t2i + config.training.batch_size_lm + config.training.batch_size_mmu)
-            * accelerator.num_processes * config.training.gradient_accumulation_steps
+    mmug_only = bool(config.training.get("mmug_only", False))
+    batch_size_mmug_cfg = (
+        config.training.batch_size_mmug if hasattr(config.training, "batch_size_mmug")
+        else (
+            config.training.batch_size_g2t if hasattr(config.training, "batch_size_g2t")
+            else config.training.batch_size_t2i
+        )
     )
+
+    if mmug_only:
+        total_batch_size_per_gpu = batch_size_mmug_cfg
+        total_batch_size = (
+            batch_size_mmug_cfg * accelerator.num_processes * config.training.gradient_accumulation_steps
+        )
+    else:
+        total_batch_size_per_gpu = (config.training.batch_size_t2i
+                                    + config.training.batch_size_lm
+                                    + config.training.batch_size_mmu)
+        total_batch_size = (
+                (config.training.batch_size_t2i + config.training.batch_size_lm + config.training.batch_size_mmu)
+                * accelerator.num_processes * config.training.gradient_accumulation_steps
+        )
 
     if accelerator.distributed_type == DistributedType.DEEPSPEED:
         accelerator.state.deepspeed_plugin.deepspeed_config["train_micro_batch_size_per_gpu"] = (
@@ -262,118 +277,124 @@ def main():
     # This means that the dataloading is not deterministic, but it's fast and efficient.
     preproc_config = config.dataset.preprocessing
     dataset_config = config.dataset.params
+    train_dataloader_t2i = None
+    train_dataloader_lm = None
+    train_dataloader_mmu = None
+    num_update_steps_per_epoch = None
+    num_train_epochs = None
 
-    # Data for generation
-    if config.dataset.gen_type == "t2i":
-        dataset = Text2ImageDataset(
-            train_shards_path_or_url=dataset_config.train_t2i_shards_path_or_url,
-            tokenizer=None,  # we want to get raw texts
-            max_seq_length=preproc_config.max_seq_length,
-            num_train_examples=config.experiment.max_train_examples_t2i,
-            per_gpu_batch_size=config.training.batch_size_t2i,
-            global_batch_size=total_batch_size_t2i_without_accum,
-            num_workers=dataset_config.num_workers,
-            resolution=preproc_config.resolution,
-            shuffle_buffer_size=dataset_config.shuffle_buffer_size,
-            pin_memory=dataset_config.pin_memory,
-            persistent_workers=dataset_config.persistent_workers,
-            external_caption_path=dataset_config.external_caption_path,
-            external_journeydb_caption_path=dataset_config.external_journeydb_caption_path,
-            external_laion12m_caption_path=dataset_config.external_laion12m_caption_path,
-            external_cc12m_caption_path=dataset_config.external_cc12m_caption_path,
-        )
-        train_dataloader_t2i = dataset.train_dataloader
-        num_update_steps_per_epoch = math.ceil(
-            train_dataloader_t2i.num_batches / config.training.gradient_accumulation_steps)
-        num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
+    if not mmug_only:
+        # Data for generation
+        if config.dataset.gen_type == "t2i":
+            dataset = Text2ImageDataset(
+                train_shards_path_or_url=dataset_config.train_t2i_shards_path_or_url,
+                tokenizer=None,  # we want to get raw texts
+                max_seq_length=preproc_config.max_seq_length,
+                num_train_examples=config.experiment.max_train_examples_t2i,
+                per_gpu_batch_size=config.training.batch_size_t2i,
+                global_batch_size=total_batch_size_t2i_without_accum,
+                num_workers=dataset_config.num_workers,
+                resolution=preproc_config.resolution,
+                shuffle_buffer_size=dataset_config.shuffle_buffer_size,
+                pin_memory=dataset_config.pin_memory,
+                persistent_workers=dataset_config.persistent_workers,
+                external_caption_path=dataset_config.external_caption_path,
+                external_journeydb_caption_path=dataset_config.external_journeydb_caption_path,
+                external_laion12m_caption_path=dataset_config.external_laion12m_caption_path,
+                external_cc12m_caption_path=dataset_config.external_cc12m_caption_path,
+            )
+            train_dataloader_t2i = dataset.train_dataloader
+            num_update_steps_per_epoch = math.ceil(
+                train_dataloader_t2i.num_batches / config.training.gradient_accumulation_steps)
+            num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
 
-    elif config.dataset.gen_type == "t2i_parquet":
-        # this part relies on the internal packages, which will not be released
-        num_update_steps_per_epoch = math.ceil(config.experiment.max_train_examples_t2i / total_batch_size_t2i)
-        num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
+        elif config.dataset.gen_type == "t2i_parquet":
+            # this part relies on the internal packages, which will not be released
+            num_update_steps_per_epoch = math.ceil(config.experiment.max_train_examples_t2i / total_batch_size_t2i)
+            num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
 
-        train_dataloader_t2i = create_imagetext_dataloader(
-            train_shards_path_or_url=dataset_config.train_t2i_shards_path_or_url,
-            batch_size=config.training.batch_size_t2i,
-            image_size=preproc_config.resolution,
-            num_workers=dataset_config.num_workers,
-            num_readers=32,
-            predefined_steps=num_update_steps_per_epoch,
-            drop_last=True,
-            shuffle=True,
-            shuffle_buffer_size=dataset_config.shuffle_buffer_size
-        )
+            train_dataloader_t2i = create_imagetext_dataloader(
+                train_shards_path_or_url=dataset_config.train_t2i_shards_path_or_url,
+                batch_size=config.training.batch_size_t2i,
+                image_size=preproc_config.resolution,
+                num_workers=dataset_config.num_workers,
+                num_readers=32,
+                predefined_steps=num_update_steps_per_epoch,
+                drop_last=True,
+                shuffle=True,
+                shuffle_buffer_size=dataset_config.shuffle_buffer_size
+            )
 
-    elif config.dataset.gen_type == "imagenet1k":
-        dataset_imagenet = ImageNetDataset(
-            dataset_config.train_t2i_shards_path_or_url,
-            image_size=preproc_config.resolution,
-        )
+        elif config.dataset.gen_type == "imagenet1k":
+            dataset_imagenet = ImageNetDataset(
+                dataset_config.train_t2i_shards_path_or_url,
+                image_size=preproc_config.resolution,
+            )
 
-        print('process index : ',
-              accelerator.process_index, ', ', accelerator.num_processes,
-              "Length: ", len(dataset_imagenet))
+            print('process index : ',
+                  accelerator.process_index, ', ', accelerator.num_processes,
+                  "Length: ", len(dataset_imagenet))
 
-        if accelerator.num_processes > 1:
-            sampler = DistributedSampler(dataset_imagenet,
-                                         num_replicas=accelerator.num_processes,
-                                         rank=accelerator.process_index,
-                                         shuffle=True,
-                                         )
-            shuffle = False
+            if accelerator.num_processes > 1:
+                sampler = DistributedSampler(dataset_imagenet,
+                                             num_replicas=accelerator.num_processes,
+                                             rank=accelerator.process_index,
+                                             shuffle=True,
+                                             )
+                shuffle = False
+            else:
+                sampler = None
+                shuffle = True
+
+            train_dataloader_t2i = DataLoader(dataset_imagenet, batch_size=config.training.batch_size_t2i,
+                                              sampler=sampler, collate_fn=dataset_imagenet.collate_fn,
+                                              shuffle=shuffle, num_workers=dataset_config.num_workers)
+            num_update_steps_per_epoch = math.ceil(len(dataset_imagenet) / total_batch_size_t2i)
+            num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
+
         else:
-            sampler = None
-            shuffle = True
+            raise ValueError(f"Unsupported dataset type {config.dataset.type}")
 
-        train_dataloader_t2i = DataLoader(dataset_imagenet, batch_size=config.training.batch_size_t2i,
-                                          sampler=sampler, collate_fn=dataset_imagenet.collate_fn,
-                                          shuffle=shuffle, num_workers=dataset_config.num_workers)
-        num_update_steps_per_epoch = math.ceil(len(dataset_imagenet) / total_batch_size_t2i)
-        num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
+        total_batch_size_mmu_without_accum = config.training.batch_size_mmu * accelerator.num_processes
+        # Data for image captioning
+        if config.dataset.und_type == "captioning":
+            dataset_mmu = Text2ImageDataset(
+                train_shards_path_or_url=dataset_config.train_mmu_shards_path_or_url,
+                tokenizer=None,  # we want to get raw texts
+                max_seq_length=preproc_config.max_seq_length,
+                num_train_examples=config.experiment.max_train_examples_mmu,
+                per_gpu_batch_size=config.training.batch_size_mmu,
+                global_batch_size=total_batch_size_mmu_without_accum,
+                num_workers=dataset_config.num_workers,
+                resolution=preproc_config.resolution,
+                shuffle_buffer_size=dataset_config.shuffle_buffer_size,
+                pin_memory=dataset_config.pin_memory,
+                persistent_workers=dataset_config.persistent_workers,
+                external_caption_path=dataset_config.external_caption_path,
+                external_journeydb_caption_path=dataset_config.external_journeydb_caption_path,
+                external_laion12m_caption_path=dataset_config.external_laion12m_caption_path,
+                external_cc12m_caption_path=dataset_config.external_cc12m_caption_path,
+                is_captioning=True,
+                add_caption_prompt=dataset_config.add_caption_prompt,
+            )
+            train_dataloader_mmu = dataset_mmu.train_dataloader
 
-    else:
-        raise ValueError(f"Unsupported dataset type {config.dataset.type}")
+        elif config.dataset.und_type == "captioning_parquet":
+            train_dataloader_mmu = create_imagetext_dataloader(
+                train_shards_path_or_url=dataset_config.train_mmu_shards_path_or_url,
+                batch_size=config.training.batch_size_mmu,
+                image_size=preproc_config.resolution,
+                num_workers=dataset_config.num_workers,
+                num_readers=32,
+                predefined_steps=num_update_steps_per_epoch,
+                drop_last=True,
+                shuffle=True,
+                shuffle_buffer_size=dataset_config.shuffle_buffer_size,
+                is_captioning=True
+            )
 
-    total_batch_size_mmu_without_accum = config.training.batch_size_mmu * accelerator.num_processes
-    # Data for image captioning
-    if config.dataset.und_type == "captioning":
-        dataset_mmu = Text2ImageDataset(
-            train_shards_path_or_url=dataset_config.train_mmu_shards_path_or_url,
-            tokenizer=None,  # we want to get raw texts
-            max_seq_length=preproc_config.max_seq_length,
-            num_train_examples=config.experiment.max_train_examples_mmu,
-            per_gpu_batch_size=config.training.batch_size_mmu,
-            global_batch_size=total_batch_size_mmu_without_accum,
-            num_workers=dataset_config.num_workers,
-            resolution=preproc_config.resolution,
-            shuffle_buffer_size=dataset_config.shuffle_buffer_size,
-            pin_memory=dataset_config.pin_memory,
-            persistent_workers=dataset_config.persistent_workers,
-            external_caption_path=dataset_config.external_caption_path,
-            external_journeydb_caption_path=dataset_config.external_journeydb_caption_path,
-            external_laion12m_caption_path=dataset_config.external_laion12m_caption_path,
-            external_cc12m_caption_path=dataset_config.external_cc12m_caption_path,
-            is_captioning=True,
-            add_caption_prompt=dataset_config.add_caption_prompt,
-        )
-        train_dataloader_mmu = dataset_mmu.train_dataloader
-
-    elif config.dataset.und_type == "captioning_parquet":
-        train_dataloader_mmu = create_imagetext_dataloader(
-            train_shards_path_or_url=dataset_config.train_mmu_shards_path_or_url,
-            batch_size=config.training.batch_size_mmu,
-            image_size=preproc_config.resolution,
-            num_workers=dataset_config.num_workers,
-            num_readers=32,
-            predefined_steps=num_update_steps_per_epoch,
-            drop_last=True,
-            shuffle=True,
-            shuffle_buffer_size=dataset_config.shuffle_buffer_size,
-            is_captioning=True
-        )
-
-    else:
-        raise NotImplementedError(f"Unsupported dataset type {config.dataset.und_type}")
+        else:
+            raise NotImplementedError(f"Unsupported dataset type {config.dataset.und_type}")
 
     # CellwText gene-to-text dataset
     if hasattr(dataset_config, 'train_g2t_lmdb_path') and dataset_config.train_g2t_lmdb_path is not None:
@@ -388,7 +409,7 @@ def main():
             lmdb_vocab_path=dataset_config.get('lmdb_vocab_path', None),
             cell_metadata_path=dataset_config.get('cell_metadata_path', None),
             caption_template=dataset_config.get('caption_template', None),
-            batch_size=config.training.batch_size_mmug if hasattr(config.training, "batch_size_mmug") else (config.training.batch_size_g2t if hasattr(config.training, "batch_size_g2t") else config.training.batch_size_t2i),
+            batch_size=batch_size_mmug_cfg,
             num_workers=dataset_config.num_workers,
             shuffle=True,
             pin_memory=dataset_config.pin_memory,
@@ -402,24 +423,34 @@ def main():
         train_dataloader_mmug = None
         num_update_steps_per_epoch_mmug = None
 
-    # LLM pure text dataset: RefinedWeb
-    dataset_lm = RefinedWebDataset(data_path=dataset_config.train_lm_shards_path_or_url,
-                                   rank=accelerator.process_index,
-                                   world_size=accelerator.num_processes,
-                                   num_workers=dataset_config.num_workers)
+    if not mmug_only:
+        # LLM pure text dataset: RefinedWeb
+        dataset_lm = RefinedWebDataset(data_path=dataset_config.train_lm_shards_path_or_url,
+                                       rank=accelerator.process_index,
+                                       world_size=accelerator.num_processes,
+                                       num_workers=dataset_config.num_workers)
 
-    train_dataloader_lm = torch.utils.data.DataLoader(dataset_lm, batch_size=config.training.batch_size_lm,
-                                                      sampler=None, collate_fn=dataset_lm.collate_fn,
-                                                      num_workers=dataset_config.num_workers)
+        train_dataloader_lm = torch.utils.data.DataLoader(dataset_lm, batch_size=config.training.batch_size_lm,
+                                                          sampler=None, collate_fn=dataset_lm.collate_fn,
+                                                          num_workers=dataset_config.num_workers)
 
     # Combine these dataloaders into a single iterable model
-    iterables = {
-        "t2i_flow": train_dataloader_t2i,
-        "lm_flow": train_dataloader_lm,
-        "mmu_flow": train_dataloader_mmu,
-    }
-    if train_dataloader_mmug is not None:
-        iterables["mmug_flow"] = train_dataloader_mmug  # multi-modal understanding for gene data
+    if mmug_only:
+        if train_dataloader_mmug is None:
+            raise ValueError("mmug_only=True but no mmug dataloader is available. Check train_g2t_lmdb_path.")
+        if num_update_steps_per_epoch_mmug is None:
+            raise ValueError("mmug_only=True but num_update_steps_per_epoch_mmug is None.")
+        iterables = {"mmug_flow": train_dataloader_mmug}
+        num_update_steps_per_epoch = num_update_steps_per_epoch_mmug
+        num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
+    else:
+        iterables = {
+            "t2i_flow": train_dataloader_t2i,
+            "lm_flow": train_dataloader_lm,
+            "mmu_flow": train_dataloader_mmu,
+        }
+        if train_dataloader_mmug is not None:
+            iterables["mmug_flow"] = train_dataloader_mmug  # multi-modal understanding for gene data
 
     combined_dataloader = CombinedLoader(iterables, mode=config.dataset.combined_loader_mode)
 
@@ -556,8 +587,115 @@ def main():
             # for loss calculation
             batch_size_t2i = batch["t2i_flow"]["images"].shape[0] if "t2i_flow" in batch else 0
             batch_size_mmug = batch["mmug_flow"]["gene_ids"].shape[0] if "mmug_flow" in batch else 0
-            batch_size_lm = len(batch["lm_flow"]["input_ids"])
+            batch_size_lm = len(batch["lm_flow"]["input_ids"]) if "lm_flow" in batch else 0
             batch_size_mmu = batch["mmu_flow"]["images"].shape[0] if "mmu_flow" in batch else 0
+
+            if mmug_only:
+                data_time_m.update(time.time() - end)
+                if batch_size_mmug == 0:
+                    continue
+
+                gene_ids = batch["mmug_flow"]["gene_ids"].to(accelerator.device, non_blocking=True)
+                texts_mmug = batch["mmug_flow"].get("texts", [""] * gene_ids.shape[0])
+                input_ids_mmug, prompt_masks_mmug, labels_mmug = uni_prompting((texts_mmug, gene_ids), 'mmug')
+                (
+                    input_ids_mmug,
+                    labels_mmug,
+                    p_mask_mmug,
+                    answer_lengths_mmug,
+                ) = prepare_inputs_and_labels_for_mmu(input_ids_mmug, prompt_masks_mmug, labels_mmug)
+                input_ids_mmug = input_ids_mmug.to(accelerator.device, non_blocking=True)
+                labels_mmug = labels_mmug.to(accelerator.device, non_blocking=True)
+
+                if global_step == 0 and epoch == 0:
+                    logger.info("MMUG input ids: {}".format(input_ids_mmug))
+                    logger.info("MMUG labels: {}".format(labels_mmug))
+
+                with accelerator.accumulate(model):
+                    mmug_seq_len = input_ids_mmug.shape[1]
+                    attention_bias_mmug = torch.ones(
+                        input_ids_mmug.shape[0], 1, mmug_seq_len, mmug_seq_len, device=input_ids_mmug.device
+                    )
+                    logits = model(input_ids_mmug, attention_bias=attention_bias_mmug).logits
+                    masked_indices_mmug = input_ids_mmug == accelerator.unwrap_model(model).config.mask_token_id
+
+                    if masked_indices_mmug.any():
+                        p_mask_mmug_for_loss = p_mask_mmug.to(masked_indices_mmug.device)
+                        answer_lengths_mmug_for_loss = answer_lengths_mmug.to(masked_indices_mmug.device)
+                        loss_mmug = torch.nn.functional.cross_entropy(
+                            logits[masked_indices_mmug].contiguous().view(-1, logits.shape[-1]),
+                            labels_mmug[masked_indices_mmug].contiguous().view(-1),
+                            ignore_index=-100,
+                            reduction='none',
+                        ) / p_mask_mmug_for_loss[masked_indices_mmug]
+                        loss_mmug = torch.sum(
+                            loss_mmug / answer_lengths_mmug_for_loss[masked_indices_mmug]
+                        ) / logits.shape[0]
+                    else:
+                        # Keep grad_fn for DeepSpeed even when this micro-batch has no masked token.
+                        loss_mmug = logits.sum() * 0.0
+
+                    avg_loss_mmug = accelerator.gather(loss_mmug.repeat(batch_size_mmug_cfg)).mean()
+                    loss = (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff) * loss_mmug
+                    loss = loss.mean()
+
+                    accelerator.backward(loss)
+
+                    if config.training.max_grad_norm is not None and accelerator.sync_gradients:
+                        accelerator.clip_grad_norm_(model.parameters(), config.training.max_grad_norm)
+
+                    optimizer.step()
+                    lr_scheduler.step()
+
+                    if (
+                            accelerator.sync_gradients
+                            and (global_step + 1) % config.experiment.log_grad_norm_every == 0
+                            and accelerator.is_main_process
+                    ):
+                        log_grad_norm(model, accelerator, global_step + 1)
+
+                    optimizer.zero_grad(set_to_none=True)
+
+                if accelerator.sync_gradients:
+                    batch_time_m.update(time.time() - end)
+                    end = time.time()
+
+                    if (global_step + 1) % config.experiment.log_every == 0:
+                        samples_per_second_per_gpu = (
+                                config.training.gradient_accumulation_steps * total_batch_size_per_gpu / batch_time_m.val
+                        )
+                        logs = {
+                            "step_loss_mmug": avg_loss_mmug.item(),
+                            "mmug_batch_size": int(batch_size_mmug),
+                            "mmug_active": int(batch_size_mmug > 0),
+                            "lr": lr_scheduler.get_last_lr()[0],
+                            "samples/sec/gpu": samples_per_second_per_gpu,
+                            "data_time": data_time_m.val,
+                            "batch_time": batch_time_m.val,
+                        }
+                        accelerator.log(logs, step=global_step + 1)
+
+                        logger.info(
+                            f"Step: {global_step + 1} "
+                            f"Loss_mmug: {avg_loss_mmug.item():0.4f} "
+                            f"MMUG_BS: {batch_size_mmug} "
+                            f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "
+                            f"Batch (t): {batch_time_m.val:0.4f} "
+                            f"LR: {lr_scheduler.get_last_lr()[0]:0.6f}"
+                        )
+
+                        batch_time_m.reset()
+                        data_time_m.reset()
+
+                    if (global_step + 1) % config.experiment.save_every == 0:
+                        save_checkpoint(model, config, accelerator, global_step + 1)
+
+                    global_step += 1
+
+                if global_step >= config.training.max_train_steps:
+                    break
+
+                continue
 
             # *-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*
             # Build formatted sequences for class-conditional/text-to-image generation
@@ -594,30 +732,24 @@ def main():
             # *-------*-------*-------*-------*-------*-------*-------*-------*-------*
             # Build formatted sequences for gene-to-text
             # *-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*
+            input_ids_mmug = None
+            labels_mmug = None
+            p_mask_mmug = None
+            answer_lengths_mmug = None
             if "mmug_flow" in batch:
                 gene_ids = batch["mmug_flow"]["gene_ids"].to(accelerator.device, non_blocking=True)
                 texts_mmug = batch["mmug_flow"].get("texts", [""] * gene_ids.shape[0])
 
-                # Use UniversalPrompting for mmug task (similar to mmu)
+                # Use a dedicated forward for mmug so we can keep long gene sequences (e.g. 2000 tokens).
                 input_ids_mmug, prompt_masks_mmug, labels_mmug = uni_prompting((texts_mmug, gene_ids), 'mmug')
                 (
-                    input_ids_mmug,  
+                    input_ids_mmug,
                     labels_mmug,
                     p_mask_mmug,
                     answer_lengths_mmug,
                 ) = prepare_inputs_and_labels_for_mmu(input_ids_mmug, prompt_masks_mmug, labels_mmug)
                 input_ids_mmug = input_ids_mmug.to(accelerator.device, non_blocking=True)
-
-                input_ids = torch.cat((input_ids, input_ids_mmug.to(input_ids.device)), dim=0)
-                labels = torch.cat((labels, labels_mmug.to(input_ids.device)), dim=0)
-
-            # Initialize mmug mask parameters
-            if "mmug_flow" in batch:
-                # p_mask_mmug and answer_lengths_mmug are already set in the mmug processing section
-                pass
-            else:
-                p_mask_mmug = None
-                answer_lengths_mmug = None
+                labels_mmug = labels_mmug.to(accelerator.device, non_blocking=True)
 
             # *-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*
             # Build formatted sequences for captioning/multimodal understanding
@@ -663,9 +795,48 @@ def main():
                 ) = prepare_inputs_and_labels_for_mmu(input_ids_mmu, prompt_masks, labels_mmu)
                 input_ids_mmu = input_ids_mmu.to(accelerator.device, non_blocking=True)
 
-            input_ids = torch.cat((input_ids, input_ids_mmu.to(input_ids.device)), dim=0)
-            labels = torch.cat((labels, labels_mmu.to(input_ids.device)), dim=0)
-            
+            # Pad all flows to a unified sequence length before concatenation.
+            target_seq_len = max(
+                input_ids.shape[1],
+                input_ids_mmu.shape[1],
+                input_ids_mmug.shape[1] if input_ids_mmug is not None else 0,
+            )
+            target_seq_len = max(target_seq_len, int(config.training.get("unified_seq_len", 0)))
+
+            pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+
+            def _pad_to_len(x, pad_value):
+                if x is None:
+                    return None
+                cur_len = x.shape[1]
+                if cur_len >= target_seq_len:
+                    return x
+                pad = x.new_full((x.shape[0], target_seq_len - cur_len), pad_value)
+                return torch.cat((x, pad), dim=1)
+
+            input_ids = _pad_to_len(input_ids, pad_token_id)
+            labels = _pad_to_len(labels, -100)
+            t2i_masks = _pad_to_len(t2i_masks, 0)
+            input_ids_mmu = _pad_to_len(input_ids_mmu.to(input_ids.device), pad_token_id)
+            labels_mmu = _pad_to_len(labels_mmu.to(input_ids.device), -100)
+            p_mask_lm = _pad_to_len(p_mask_lm, 0.0)
+            p_mask_mmu = _pad_to_len(p_mask_mmu, 0.0)
+            answer_lengths = _pad_to_len(answer_lengths, 1)
+
+            if input_ids_mmug is not None:
+                input_ids_mmug = _pad_to_len(input_ids_mmug.to(input_ids.device), pad_token_id)
+                labels_mmug = _pad_to_len(labels_mmug.to(input_ids.device), -100)
+                p_mask_mmug = _pad_to_len(p_mask_mmug, 0.0)
+                answer_lengths_mmug = _pad_to_len(answer_lengths_mmug, 1)
+                input_ids = torch.cat((input_ids, input_ids_mmug), dim=0)
+                labels = torch.cat((labels, labels_mmug), dim=0)
+            else:
+                p_mask_mmug = None
+                answer_lengths_mmug = None
+
+            input_ids = torch.cat((input_ids, input_ids_mmu), dim=0)
+            labels = torch.cat((labels, labels_mmu), dim=0)
+
             if global_step == 0 and epoch == 0:
                 logger.info("Input ids: {}".format(input_ids))
                 logger.info("Labels: {}".format(labels))
@@ -686,12 +857,22 @@ def main():
                     answer_lengths_mmug=answer_lengths_mmug,
                     t2i_masks=t2i_masks
                 )
+
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss_t2i = accelerator.gather(loss_t2i.repeat(config.training.batch_size_t2i)).mean()
-                avg_loss_mmug = accelerator.gather(loss_mmug.repeat((config.training.batch_size_mmug if hasattr(config.training, "batch_size_mmug") else (config.training.batch_size_g2t if hasattr(config.training, "batch_size_g2t") else config.training.batch_size_t2i)))).mean() if batch_size_mmug > 0 else torch.tensor(0.0)
+                if batch_size_mmug > 0:
+                    mmug_bs_for_log = (
+                        config.training.batch_size_mmug if hasattr(config.training, "batch_size_mmug")
+                        else (
+                            config.training.batch_size_g2t if hasattr(config.training, "batch_size_g2t")
+                            else config.training.batch_size_t2i
+                        )
+                    )
+                    avg_loss_mmug = accelerator.gather(loss_mmug.repeat(mmug_bs_for_log)).mean()
+                else:
+                    avg_loss_mmug = torch.tensor(0.0, device=loss_t2i.device)
                 avg_loss_lm = accelerator.gather(loss_lm.repeat(config.training.batch_size_lm)).mean()
                 avg_loss_mmu = accelerator.gather(loss_mmu.repeat(config.training.batch_size_mmu)).mean()
-                loss_mmug = torch.tensor(0.0, device=loss_t2i.device) if batch_size_mmug == 0 else loss_mmug
                 loss = config.training.t2i_coeff * loss_t2i + \
                        (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff) * loss_mmug + \
                        config.training.lm_coeff * loss_lm + \

@@ -45,13 +45,13 @@ dataset:
     combined_loader_mode: "max_size_cycle"
     params:
         # CellwText gene expression dataset configuration for multi-modal understanding
-        train_g2t_lmdb_path: null  # Path to CellwText LMDB data (config name kept for compatibility)
-        gene_vocab_path: ""  # Path to scgpt gene vocabulary
-        celltype_label_path: null  # Optional path to cell type labels
-        cell_metadata_path: null  # Optional json/csv/tsv metadata with celltype/disease/tissue
+        train_g2t_lmdb_path: "/data/bgi/data/projects/multimodal/RNA_data/cellwtext_data/CellwText"  # Path to CellwText LMDB data (config name kept for compatibility)
+        gene_vocab_path: "/data/bgi/data/projects/multimodal/zyh/datasets/CellwText/scgpt/vocab.json"  # Path to scgpt gene vocabulary
+        celltype_label_path: "/data/bgi/data/projects/multimodal/zyh/datasets/CellwText/vocab/celltype_label.json"  # Optional path to cell type labels
+        cell_metadata_path: "/data/bgi/data/projects/multimodal/zyh/data_process/cellwtext_captions/captions_compact_5k.json"  # Optional json/csv/tsv metadata with celltype/disease/tissue
         caption_template: null  # Optional format template, e.g. 'This cell is a {celltype}{disease_clause}{tissue_clause}.'
-        lmdb_vocab_path: null  # Path to LMDB vocabulary for ID mapping
-        max_gene_tokens: 2000  # Maximum number of gene tokens per sample
+        lmdb_vocab_path: "/data/bgi/data/projects/multimodal/zyh/datasets/CellwText/vocab/gene_vocab.json"  # Path to LMDB vocabulary for ID mapping
+        max_gene_tokens: 1200  # Maximum number of gene tokens per sample
         num_expression_bins: 51  # Number of bins for expression values
         # ImageNet and SA-1B data paths
         train_t2i_shards_path_or_url: "/data/bgi/data/projects/multimodal/zyh/datasets/imagenet-1k/train"
@@ -113,10 +113,10 @@ training:
     # gradient_accumulation_steps: 2
     noise_type: "mask"
     # Reduced batch sizes for 4 GPUs (4,5,6,7)
-    batch_size_t2i: 1
+    batch_size_t2i: 0
     batch_size_mmug: 1
-    batch_size_lm: 1
-    batch_size_mmu: 1
+    batch_size_lm: 0
+    batch_size_mmu: 0
     # batch_size_t2i: 7
     # batch_size_t2i: 3
     # batch_size_t2i: 3
@@ -126,6 +126,8 @@ training:
     seed: 10086
     # max_train_steps: 500000
     max_train_steps: 500
+    mmug_only: true
+    unified_seq_len: 2131
     overfit_one_batch: False
     cond_dropout_prob: 0.1
     min_masking_rate: 0.0

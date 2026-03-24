@@ -638,6 +638,84 @@ class CellwTextDataset:
             return self.cell_metadata[idx]
         return None
 
+    @staticmethod
+    def _first_non_empty(*values):
+        for value in values:
+            if value is None:
+                continue
+            value = str(value).strip()
+            if value == '' or value.lower() in {'none', 'null', 'nan', 'unknown'}:
+                continue
+            return value
+        return None
+
+    @staticmethod
+    def _truncate_text(text, max_chars=400):
+        if text is None:
+            return None
+        text = str(text).strip()
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 3].rstrip() + '...'
+
+    def _build_caption_from_record(self, data, metadata_row, celltype_label_raw):
+        metadata_row = metadata_row if isinstance(metadata_row, dict) else {}
+
+        celltype_name = self._first_non_empty(
+            data.get('celltype_name'),
+            data.get('celltype'),
+            data.get('cell_type'),
+            metadata_row.get('celltype_name'),
+            metadata_row.get('celltype'),
+            metadata_row.get('cell_type'),
+            celltype_label_raw,
+        )
+        disease_name = self._first_non_empty(
+            data.get('disease_name'),
+            data.get('disease'),
+            metadata_row.get('disease_name'),
+            metadata_row.get('disease'),
+        )
+        tissue_name = self._first_non_empty(
+            data.get('tissue_name'),
+            data.get('tissue'),
+            metadata_row.get('tissue_name'),
+            metadata_row.get('tissue'),
+        )
+        sex_name = self._first_non_empty(data.get('sex_name'), metadata_row.get('sex_name'), metadata_row.get('sex'))
+        stage_name = self._first_non_empty(data.get('stage_name'), metadata_row.get('stage_name'), metadata_row.get('stage'))
+
+        celltype_def = self._truncate_text(self._first_non_empty(data.get('celltype_definition'), metadata_row.get('celltype_definition')))
+        disease_def = self._truncate_text(self._first_non_empty(data.get('disease_definition'), metadata_row.get('disease_definition')))
+        tissue_def = self._truncate_text(self._first_non_empty(data.get('tissue_definition'), metadata_row.get('tissue_definition')))
+
+        parts = []
+        base = "This cell"
+        if celltype_name:
+            base += f" is a {celltype_name}"
+        if disease_name:
+            base += f" under {disease_name} condition"
+        if tissue_name:
+            base += f" from {tissue_name}"
+        if sex_name:
+            base += f" of {sex_name}"
+        if stage_name:
+            base += f" at {stage_name} stage"
+        if base != "This cell":
+            parts.append(base + ".")
+
+        if celltype_def:
+            parts.append(f"Cell type definition: {celltype_def}")
+        if disease_def:
+            parts.append(f"Disease definition: {disease_def}")
+        if tissue_def:
+            parts.append(f"Tissue definition: {tissue_def}")
+
+        if parts:
+            return " ".join(parts)
+
+        return self._build_caption(celltype_name, disease_name, tissue_name)
+
     def _build_caption(self, celltype, disease, tissue):
         celltype = self._clean_optional_text(celltype)
         disease = self._clean_optional_text(disease)
@@ -702,11 +780,23 @@ class CellwTextDataset:
                 except Exception as e:
                     raise ValueError(f"Failed to decode LMDB value at idx {idx}: {e}")
 
-        gene_ids_lmdb = data.get('gene_ids', [])[:self.max_gene_tokens]
-        expression_bins = data.get('expression_bins', [])[:self.max_gene_tokens]
+        gene_ids_lmdb = list(data.get('gene_ids', []))
+        expression_bins = list(data.get('expression_bins', []))
 
         if len(expression_bins) < len(gene_ids_lmdb):
             expression_bins = expression_bins + [0] * (len(gene_ids_lmdb) - len(expression_bins))
+
+        # Keep the most informative genes under fixed token budget: top-k by expression bin.
+        if len(gene_ids_lmdb) > self.max_gene_tokens:
+            topk_indices = sorted(
+                range(len(gene_ids_lmdb)),
+                key=lambda i: expression_bins[i],
+                reverse=True
+            )[:self.max_gene_tokens]
+            # Restore original order to avoid introducing an arbitrary sort in sequence positions.
+            topk_indices = sorted(topk_indices)
+            gene_ids_lmdb = [gene_ids_lmdb[i] for i in topk_indices]
+            expression_bins = [expression_bins[i] for i in topk_indices]
 
         if self.lmdb_id2scgpt_id is not None:
             gene_ids = [self.lmdb_id2scgpt_id[lmdb_id] for lmdb_id in gene_ids_lmdb if lmdb_id in self.lmdb_id2scgpt_id]
@@ -724,28 +814,8 @@ class CellwTextDataset:
             expression_bins = expression_bins + [0] * (self.max_gene_tokens - len(expression_bins))
 
         metadata_row = self._get_metadata_row(idx)
-        metadata_celltype = None
-        metadata_disease = None
-        metadata_tissue = None
-        if isinstance(metadata_row, dict):
-            metadata_celltype = metadata_row.get('celltype', metadata_row.get('cell_type', None))
-            metadata_disease = metadata_row.get('disease', None)
-            metadata_tissue = metadata_row.get('tissue', None)
-
-        data_celltype = data.get('celltype', data.get('cell_type', None))
-        data_disease = data.get('disease', None)
-        data_tissue = data.get('tissue', None)
-
         celltype_label_raw = self._get_celltype_label(idx)
-        caption_celltype = data_celltype if data_celltype is not None else metadata_celltype
-        if caption_celltype is None:
-            caption_celltype = celltype_label_raw
-
-        caption_text = self._build_caption(
-            caption_celltype,
-            data_disease if data_disease is not None else metadata_disease,
-            data_tissue if data_tissue is not None else metadata_tissue,
-        )
+        caption_text = self._build_caption_from_record(data, metadata_row, celltype_label_raw)
 
         # Keep numeric tensor label for compatibility with existing code.
         if isinstance(celltype_label_raw, (int, float)):
