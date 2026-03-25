@@ -521,6 +521,7 @@ class CellwTextDataset:
             num_expression_bins: int = 51,
             lmdb_vocab_path: Optional[str] = None,
             cell_metadata_path: Optional[str] = None,
+            cell_feature_root: Optional[str] = None,
             caption_template: Optional[str] = None,
             batch_size: int = 4,
             num_workers: int = 4,
@@ -547,6 +548,17 @@ class CellwTextDataset:
         self.shuffle = shuffle
         self.pin_memory = pin_memory
         self.caption_template = caption_template
+        self.cell_feature_root = cell_feature_root
+        self.h5ad_paths = {}
+        self.h5ad_handles = {}
+        self.h5ad_validated = set()
+
+        if self.cell_feature_root is not None and os.path.isdir(self.cell_feature_root):
+            self.h5ad_paths = {
+                os.path.splitext(p)[0]: os.path.join(self.cell_feature_root, p)
+                for p in os.listdir(self.cell_feature_root)
+                if p.endswith('.h5ad')
+            }
 
         # Load scgpt gene vocabulary
         with open(gene_vocab_path, 'r') as f:
@@ -757,6 +769,42 @@ class CellwTextDataset:
             running += env_len
         raise IndexError(f"Index {idx} could not be resolved")
 
+    def _get_h5ad_handle(self, env_idx):
+        if not self.h5ad_paths:
+            return None
+        stem = os.path.splitext(os.path.basename(self.lmdb_paths[env_idx]))[0]
+        if stem not in self.h5ad_paths:
+            return None
+        if stem not in self.h5ad_handles:
+            import anndata as ad
+            self.h5ad_handles[stem] = ad.read_h5ad(self.h5ad_paths[stem], backed='r')
+        return self.h5ad_handles[stem]
+
+    def _get_cell_feature(self, env_idx, local_idx):
+        h5ad_handle = self._get_h5ad_handle(env_idx)
+        if h5ad_handle is None:
+            return None
+
+        stem = os.path.splitext(os.path.basename(self.lmdb_paths[env_idx]))[0]
+        if stem not in self.h5ad_validated:
+            if local_idx >= h5ad_handle.n_obs:
+                raise IndexError(
+                    f"Local index {local_idx} out of range for H5AD shard {stem} with length {h5ad_handle.n_obs}"
+                )
+            lmdb_key = str(h5ad_handle.obs.iloc[local_idx]['lmdb_key']) if 'lmdb_key' in h5ad_handle.obs.columns else None
+            expected_key = f"{local_idx:09d}"
+            if lmdb_key is not None and lmdb_key != expected_key:
+                raise ValueError(
+                    f"H5AD/LMDB misalignment in shard {stem}: expected lmdb_key {expected_key}, got {lmdb_key}"
+                )
+            self.h5ad_validated.add(stem)
+
+        import numpy as np
+        import torch
+
+        feature = np.asarray(h5ad_handle.X[local_idx]).reshape(-1)
+        return torch.tensor(feature, dtype=torch.float32)
+
     def __getitem__(self, idx):
         import torch
         import msgpack
@@ -823,11 +871,14 @@ class CellwTextDataset:
         else:
             celltype_label_tensor = torch.tensor(-1, dtype=torch.long)
 
+        cell_feature = self._get_cell_feature(env_idx, local_idx)
+
         return {
             'gene_ids': torch.tensor(gene_ids, dtype=torch.long),
             'gene_expression': torch.tensor(expression_bins, dtype=torch.long),
             'celltype_label': celltype_label_tensor,
             'texts': caption_text,
+            'cell_features': cell_feature,
         }
 
     def collate_fn(self, batch):
@@ -837,13 +888,19 @@ class CellwTextDataset:
         gene_expression = torch.stack([item['gene_expression'] for item in batch])
         celltype_label = torch.stack([item['celltype_label'] for item in batch])
         texts = [item.get('texts', '') for item in batch]
+        cell_features = None
+        if batch and batch[0].get('cell_features') is not None:
+            cell_features = torch.stack([item['cell_features'] for item in batch])
 
-        return {
+        output = {
             'gene_ids': gene_ids,
             'gene_expression': gene_expression,
             'celltype_label': celltype_label,
             'texts': texts,
         }
+        if cell_features is not None:
+            output['cell_features'] = cell_features
+        return output
 
     def get_dataloader(self):
         """

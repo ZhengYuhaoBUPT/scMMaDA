@@ -49,6 +49,7 @@ dataset:
         gene_vocab_path: "/data/bgi/data/projects/multimodal/zyh/datasets/CellwText/scgpt/vocab.json"  # Path to scgpt gene vocabulary
         celltype_label_path: "/data/bgi/data/projects/multimodal/zyh/datasets/CellwText/vocab/celltype_label.json"  # Optional path to cell type labels
         cell_metadata_path: "/data/bgi/data/projects/multimodal/zyh/data_process/cellwtext_captions/captions_compact_5k.json"  # Optional json/csv/tsv metadata with celltype/disease/tissue
+        cell_feature_root: "/home/qijinyin/wanghaoran/zxy/features/okrcell_features"  # Optional H5AD shard directory aligned by shard name + lmdb_key
         caption_template: null  # Optional format template, e.g. 'This cell is a {celltype}{disease_clause}{tissue_clause}.'
         lmdb_vocab_path: "/data/bgi/data/projects/multimodal/zyh/datasets/CellwText/vocab/gene_vocab.json"  # Path to LMDB vocabulary for ID mapping
         max_gene_tokens: 1200  # Maximum number of gene tokens per sample
@@ -114,7 +115,7 @@ training:
     noise_type: "mask"
     # Reduced batch sizes for 4 GPUs (4,5,6,7)
     batch_size_t2i: 0
-    batch_size_mmug: 1
+    batch_size_mmug: 3
     batch_size_lm: 0
     batch_size_mmu: 0
     # batch_size_t2i: 7
@@ -128,6 +129,8 @@ training:
     max_train_steps: 500
     mmug_only: true
     unified_seq_len: 2131
+    cell_feature_num_soft_tokens: 4
+    cell_feature_dropout: 0.0
     overfit_one_batch: False
     cond_dropout_prob: 0.1
     min_masking_rate: 0.0

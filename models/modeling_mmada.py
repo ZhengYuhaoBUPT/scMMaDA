@@ -31,6 +31,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.auto import AutoModel, AutoConfig, AutoModelForCausalLM
 from transformers.cache_utils import Cache
 from PIL import Image
+from .cell_feature_soft_tokens import CellFeatureSoftTokenizer
 from .configuration_llada import (
     LLaDAConfig,
     StrEnum,
@@ -113,6 +114,76 @@ class MMadaModelLM(LLaDAModelLM):
         # # resize token embeddings
         # print(f"Resizing token embeddings to {config.new_vocab_size}")
         # self.resize_token_embeddings(config.new_vocab_size)
+
+        self.cell_feature_soft_tokenizer: Optional[CellFeatureSoftTokenizer] = None
+
+    def init_cell_feature_soft_tokenizer(
+            self,
+            input_dim: int = 768,
+            num_soft_tokens: int = 4,
+            hidden_dim: Optional[int] = None,
+            dropout: float = 0.0,
+    ) -> CellFeatureSoftTokenizer:
+        embedding_dim = self.get_input_embeddings().weight.shape[1]
+        self.cell_feature_soft_tokenizer = CellFeatureSoftTokenizer(
+            input_dim=input_dim,
+            output_dim=embedding_dim,
+            num_soft_tokens=num_soft_tokens,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+        ).to(self.get_input_embeddings().weight.device)
+        return self.cell_feature_soft_tokenizer
+
+    def encode_cell_features(self, cell_features: torch.Tensor) -> torch.Tensor:
+        if self.cell_feature_soft_tokenizer is None:
+            self.init_cell_feature_soft_tokenizer(input_dim=cell_features.shape[-1])
+
+        module_param = next(self.cell_feature_soft_tokenizer.parameters())
+        cell_features = cell_features.to(device=module_param.device, dtype=module_param.dtype)
+        soft_tokens = self.cell_feature_soft_tokenizer(cell_features)
+        return soft_tokens.to(dtype=self.get_input_embeddings().weight.dtype)
+
+    def build_inputs_embeds_with_cell_features(
+            self,
+            input_ids: torch.LongTensor,
+            cell_features: torch.Tensor,
+    ) -> torch.Tensor:
+        token_embeds = self.get_input_embeddings()(input_ids)
+        soft_tokens = self.encode_cell_features(cell_features).to(device=token_embeds.device, dtype=token_embeds.dtype)
+        return torch.cat([soft_tokens, token_embeds], dim=1)
+
+    @staticmethod
+    def extend_attention_mask_for_prefix(
+            attention_mask: Optional[torch.Tensor],
+            prefix_length: int,
+            device: Optional[torch.device] = None,
+    ) -> Optional[torch.Tensor]:
+        if attention_mask is None:
+            return None
+        prefix_mask = torch.ones(
+            attention_mask.shape[0], prefix_length, dtype=attention_mask.dtype, device=device or attention_mask.device
+        )
+        return torch.cat([prefix_mask, attention_mask], dim=1)
+
+    @staticmethod
+    def extend_attention_bias_for_prefix(
+            attention_bias: Optional[torch.Tensor],
+            prefix_length: int,
+            device: Optional[torch.device] = None,
+    ) -> Optional[torch.Tensor]:
+        if attention_bias is None:
+            return None
+        batch_size, _, seq_len, _ = attention_bias.shape
+        expanded = torch.ones(
+            batch_size,
+            1,
+            seq_len + prefix_length,
+            seq_len + prefix_length,
+            dtype=attention_bias.dtype,
+            device=device or attention_bias.device,
+        )
+        expanded[:, :, prefix_length:, prefix_length:] = attention_bias
+        return expanded
 
     @torch.no_grad()
     def t2i_generate(

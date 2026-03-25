@@ -211,6 +211,14 @@ def main():
     model.config.embedding_size = model.config.vocab_size
     model = model.to(accelerator.device)
 
+    if config.dataset.params.get("cell_feature_root", None):
+        model.init_cell_feature_soft_tokenizer(
+            input_dim=int(config.dataset.params.get("cell_feature_dim", 768)),
+            num_soft_tokens=int(config.training.get("cell_feature_num_soft_tokens", 4)),
+            hidden_dim=config.training.get("cell_feature_hidden_dim", None),
+            dropout=float(config.training.get("cell_feature_dropout", 0.0)),
+        )
+
     mask_id = model.config.mask_token_id
 
     ##################################
@@ -408,6 +416,7 @@ def main():
             num_expression_bins=dataset_config.get('num_expression_bins', 51),
             lmdb_vocab_path=dataset_config.get('lmdb_vocab_path', None),
             cell_metadata_path=dataset_config.get('cell_metadata_path', None),
+            cell_feature_root=dataset_config.get('cell_feature_root', None),
             caption_template=dataset_config.get('caption_template', None),
             batch_size=batch_size_mmug_cfg,
             num_workers=dataset_config.num_workers,
@@ -459,6 +468,7 @@ def main():
     #################################
     global_step = 0
     first_epoch = 0
+    checkpoint_strict = not bool(config.dataset.params.get("cell_feature_root", None))
 
     if config.experiment.resume_from_checkpoint:
         dirs = os.listdir(config.experiment.output_dir)
@@ -474,21 +484,35 @@ def main():
             first_epoch = global_step // num_update_steps_per_epoch
             if os.path.exists(f'{path}/unwrapped_model/pytorch_model.bin'):
                 state_dict = torch.load(f'{path}/unwrapped_model/pytorch_model.bin', map_location="cpu")
-                model.load_state_dict(state_dict, strict=True)
+                load_result = model.load_state_dict(state_dict, strict=checkpoint_strict)
+                if not checkpoint_strict:
+                    logger.warning(
+                        "Loaded checkpoint with strict=False to allow newly added cell_feature_soft_tokenizer parameters. "
+                        f"Missing keys: {list(load_result.missing_keys)[:20]}"
+                    )
                 del state_dict
             elif os.path.exists(f'{path}/unwrapped_model/pytorch_model.bin.index.json'):
                 from safetensors.torch import load_file
                 from transformers.modeling_utils import load_sharded_checkpoint
-                load_sharded_checkpoint(model, f'{path}/unwrapped_model/')
+                load_sharded_checkpoint(model, f'{path}/unwrapped_model/', strict=checkpoint_strict)
+                if not checkpoint_strict:
+                    logger.warning(
+                        "Loaded sharded checkpoint with strict=False to allow newly added cell_feature_soft_tokenizer parameters."
+                    )
             # if safetensors sharded checkpoint exists
             elif os.path.exists(f'{path}/unwrapped_model/model.safetensors.index.json'):
                 from transformers.modeling_utils import load_sharded_checkpoint
                 load_sharded_checkpoint(
                     model, 
                     f'{path}/unwrapped_model/',
+                    strict=checkpoint_strict,
                     # weight_map=None, 
                     # load_state_dict_fn="safetensors"
                 )
+                if not checkpoint_strict:
+                    logger.warning(
+                        "Loaded safetensors sharded checkpoint with strict=False to allow newly added cell_feature_soft_tokenizer parameters."
+                    )
             else:
                 raise FileNotFoundError(f"Checkpoint {path}/unwrapped_model/pytorch_model.bin not found")
     else:
@@ -597,6 +621,9 @@ def main():
 
                 gene_ids = batch["mmug_flow"]["gene_ids"].to(accelerator.device, non_blocking=True)
                 texts_mmug = batch["mmug_flow"].get("texts", [""] * gene_ids.shape[0])
+                cell_features_mmug = batch["mmug_flow"].get("cell_features", None)
+                if cell_features_mmug is not None:
+                    cell_features_mmug = cell_features_mmug.to(accelerator.device, non_blocking=True)
                 input_ids_mmug, prompt_masks_mmug, labels_mmug = uni_prompting((texts_mmug, gene_ids), 'mmug')
                 (
                     input_ids_mmug,
@@ -612,19 +639,66 @@ def main():
                     logger.info("MMUG labels: {}".format(labels_mmug))
 
                 with accelerator.accumulate(model):
-                    mmug_seq_len = input_ids_mmug.shape[1]
+                    input_ids_for_loss = input_ids_mmug
+                    labels_for_loss = labels_mmug
+                    p_mask_for_loss = p_mask_mmug
+                    answer_lengths_for_loss = answer_lengths_mmug
                     attention_bias_mmug = torch.ones(
-                        input_ids_mmug.shape[0], 1, mmug_seq_len, mmug_seq_len, device=input_ids_mmug.device
+                        input_ids_mmug.shape[0], 1, input_ids_mmug.shape[1], input_ids_mmug.shape[1], device=input_ids_mmug.device
                     )
-                    logits = model(input_ids_mmug, attention_bias=attention_bias_mmug).logits
-                    masked_indices_mmug = input_ids_mmug == accelerator.unwrap_model(model).config.mask_token_id
+
+                    model_kwargs = {"attention_bias": attention_bias_mmug}
+                    if cell_features_mmug is not None:
+                        unwrapped_model = accelerator.unwrap_model(model)
+                        num_soft_tokens = int(config.training.get("cell_feature_num_soft_tokens", 4))
+                        hidden_dim = config.training.get("cell_feature_hidden_dim", None)
+                        dropout = float(config.training.get("cell_feature_dropout", 0.0))
+                        if (
+                            getattr(unwrapped_model, "cell_feature_soft_tokenizer", None) is None
+                            or unwrapped_model.cell_feature_soft_tokenizer.num_soft_tokens != num_soft_tokens
+                            or unwrapped_model.cell_feature_soft_tokenizer.input_dim != cell_features_mmug.shape[-1]
+                        ):
+                            unwrapped_model.init_cell_feature_soft_tokenizer(
+                                input_dim=cell_features_mmug.shape[-1],
+                                num_soft_tokens=num_soft_tokens,
+                                hidden_dim=hidden_dim,
+                                dropout=dropout,
+                            )
+
+                        prefix_length = unwrapped_model.cell_feature_soft_tokenizer.num_soft_tokens
+                        pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+                        prefix_ids = torch.full(
+                            (input_ids_mmug.shape[0], prefix_length),
+                            pad_token_id,
+                            dtype=input_ids_mmug.dtype,
+                            device=input_ids_mmug.device,
+                        )
+                        input_ids_for_loss = torch.cat([prefix_ids, input_ids_mmug], dim=1)
+                        labels_for_loss = torch.cat([torch.full_like(prefix_ids, -100), labels_mmug], dim=1)
+                        p_mask_for_loss = torch.cat([torch.ones_like(prefix_ids, dtype=p_mask_mmug.dtype), p_mask_mmug], dim=1)
+                        answer_lengths_for_loss = torch.cat([torch.ones_like(prefix_ids, dtype=answer_lengths_mmug.dtype), answer_lengths_mmug], dim=1)
+                        attention_bias_mmug = unwrapped_model.extend_attention_bias_for_prefix(attention_bias_mmug, prefix_length)
+                        inputs_embeds_mmug = unwrapped_model.build_inputs_embeds_with_cell_features(input_ids_mmug, cell_features_mmug)
+                        model_kwargs = {
+                            "input_ids": input_ids_for_loss,
+                            "inputs_embeds": inputs_embeds_mmug,
+                            "attention_bias": attention_bias_mmug,
+                        }
+                    else:
+                        model_kwargs = {
+                            "input_ids": input_ids_mmug,
+                            "attention_bias": attention_bias_mmug,
+                        }
+
+                    logits = model(**model_kwargs).logits
+                    masked_indices_mmug = input_ids_for_loss == accelerator.unwrap_model(model).config.mask_token_id
 
                     if masked_indices_mmug.any():
-                        p_mask_mmug_for_loss = p_mask_mmug.to(masked_indices_mmug.device)
-                        answer_lengths_mmug_for_loss = answer_lengths_mmug.to(masked_indices_mmug.device)
+                        p_mask_mmug_for_loss = p_mask_for_loss.to(masked_indices_mmug.device)
+                        answer_lengths_mmug_for_loss = answer_lengths_for_loss.to(masked_indices_mmug.device)
                         loss_mmug = torch.nn.functional.cross_entropy(
                             logits[masked_indices_mmug].contiguous().view(-1, logits.shape[-1]),
-                            labels_mmug[masked_indices_mmug].contiguous().view(-1),
+                            labels_for_loss[masked_indices_mmug].contiguous().view(-1),
                             ignore_index=-100,
                             reduction='none',
                         ) / p_mask_mmug_for_loss[masked_indices_mmug]
