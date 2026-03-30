@@ -5,5 +5,7 @@ logs/
 
 mmada-training-*/
 *.safetensors
+scmmada-training*
+
 
 # evaluation/

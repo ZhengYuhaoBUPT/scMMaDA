@@ -620,6 +620,9 @@ def main():
                     continue
 
                 gene_ids = batch["mmug_flow"]["gene_ids"].to(accelerator.device, non_blocking=True)
+                gene_expression_mmug = batch["mmug_flow"].get("gene_expression", None)
+                if gene_expression_mmug is not None:
+                    gene_expression_mmug = gene_expression_mmug.to(accelerator.device, non_blocking=True)
                 texts_mmug = batch["mmug_flow"].get("texts", [""] * gene_ids.shape[0])
                 cell_features_mmug = batch["mmug_flow"].get("cell_features", None)
                 if cell_features_mmug is not None:
@@ -664,6 +667,15 @@ def main():
                                 hidden_dim=hidden_dim,
                                 dropout=dropout,
                             )
+                        gene_expr_hidden_dim = config.training.get("gene_expression_hidden_dim", None)
+                        gene_expr_dropout = float(config.training.get("gene_expression_dropout", 0.0))
+                        gene_expr_max_value = float(config.training.get("gene_expression_max_value", 20.0))
+                        if getattr(unwrapped_model, "gene_expression_value_encoder", None) is None:
+                            unwrapped_model.init_gene_expression_value_encoder(
+                                hidden_dim=gene_expr_hidden_dim,
+                                dropout=gene_expr_dropout,
+                                max_value=gene_expr_max_value,
+                            )
 
                         prefix_length = unwrapped_model.cell_feature_soft_tokenizer.num_soft_tokens
                         pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
@@ -678,17 +690,44 @@ def main():
                         p_mask_for_loss = torch.cat([torch.ones_like(prefix_ids, dtype=p_mask_mmug.dtype), p_mask_mmug], dim=1)
                         answer_lengths_for_loss = torch.cat([torch.ones_like(prefix_ids, dtype=answer_lengths_mmug.dtype), answer_lengths_mmug], dim=1)
                         attention_bias_mmug = unwrapped_model.extend_attention_bias_for_prefix(attention_bias_mmug, prefix_length)
-                        inputs_embeds_mmug = unwrapped_model.build_inputs_embeds_with_cell_features(input_ids_mmug, cell_features_mmug)
+                        inputs_embeds_mmug = unwrapped_model.build_inputs_embeds_with_conditioning(
+                            input_ids=input_ids_mmug,
+                            cell_features=cell_features_mmug,
+                            gene_expression=gene_expression_mmug,
+                            gene_token_start=2,
+                        )
                         model_kwargs = {
                             "input_ids": input_ids_for_loss,
                             "inputs_embeds": inputs_embeds_mmug,
                             "attention_bias": attention_bias_mmug,
                         }
                     else:
-                        model_kwargs = {
-                            "input_ids": input_ids_mmug,
-                            "attention_bias": attention_bias_mmug,
-                        }
+                        if gene_expression_mmug is not None:
+                            unwrapped_model = accelerator.unwrap_model(model)
+                            gene_expr_hidden_dim = config.training.get("gene_expression_hidden_dim", None)
+                            gene_expr_dropout = float(config.training.get("gene_expression_dropout", 0.0))
+                            gene_expr_max_value = float(config.training.get("gene_expression_max_value", 20.0))
+                            if getattr(unwrapped_model, "gene_expression_value_encoder", None) is None:
+                                unwrapped_model.init_gene_expression_value_encoder(
+                                    hidden_dim=gene_expr_hidden_dim,
+                                    dropout=gene_expr_dropout,
+                                    max_value=gene_expr_max_value,
+                                )
+                            inputs_embeds_mmug = unwrapped_model.build_inputs_embeds_with_conditioning(
+                                input_ids=input_ids_mmug,
+                                gene_expression=gene_expression_mmug,
+                                gene_token_start=2,
+                            )
+                            model_kwargs = {
+                                "input_ids": input_ids_mmug,
+                                "inputs_embeds": inputs_embeds_mmug,
+                                "attention_bias": attention_bias_mmug,
+                            }
+                        else:
+                            model_kwargs = {
+                                "input_ids": input_ids_mmug,
+                                "attention_bias": attention_bias_mmug,
+                            }
 
                     logits = model(**model_kwargs).logits
                     masked_indices_mmug = input_ids_for_loss == accelerator.unwrap_model(model).config.mask_token_id

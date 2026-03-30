@@ -829,22 +829,22 @@ class CellwTextDataset:
                     raise ValueError(f"Failed to decode LMDB value at idx {idx}: {e}")
 
         gene_ids_lmdb = list(data.get('gene_ids', []))
-        expression_bins = list(data.get('expression_bins', []))
+        log1p_x = list(data.get('log1p_x', []))
 
-        if len(expression_bins) < len(gene_ids_lmdb):
-            expression_bins = expression_bins + [0] * (len(gene_ids_lmdb) - len(expression_bins))
+        if len(log1p_x) < len(gene_ids_lmdb):
+            log1p_x = log1p_x + [0.0] * (len(gene_ids_lmdb) - len(log1p_x))
 
-        # Keep the most informative genes under fixed token budget: top-k by expression bin.
+        # Keep the most informative genes under fixed token budget: top-k by log1p expression.
         if len(gene_ids_lmdb) > self.max_gene_tokens:
             topk_indices = sorted(
                 range(len(gene_ids_lmdb)),
-                key=lambda i: expression_bins[i],
+                key=lambda i: log1p_x[i],
                 reverse=True
             )[:self.max_gene_tokens]
             # Restore original order to avoid introducing an arbitrary sort in sequence positions.
             topk_indices = sorted(topk_indices)
             gene_ids_lmdb = [gene_ids_lmdb[i] for i in topk_indices]
-            expression_bins = [expression_bins[i] for i in topk_indices]
+            log1p_x = [log1p_x[i] for i in topk_indices]
 
         if self.lmdb_id2scgpt_id is not None:
             gene_ids = [self.lmdb_id2scgpt_id[lmdb_id] for lmdb_id in gene_ids_lmdb if lmdb_id in self.lmdb_id2scgpt_id]
@@ -856,10 +856,10 @@ class CellwTextDataset:
         if len(gene_ids) < self.max_gene_tokens:
             gene_ids = gene_ids + [0] * (self.max_gene_tokens - len(gene_ids))
 
-        if len(expression_bins) > self.max_gene_tokens:
-            expression_bins = expression_bins[:self.max_gene_tokens]
-        if len(expression_bins) < self.max_gene_tokens:
-            expression_bins = expression_bins + [0] * (self.max_gene_tokens - len(expression_bins))
+        if len(log1p_x) > self.max_gene_tokens:
+            log1p_x = log1p_x[:self.max_gene_tokens]
+        if len(log1p_x) < self.max_gene_tokens:
+            log1p_x = log1p_x + [0.0] * (self.max_gene_tokens - len(log1p_x))
 
         metadata_row = self._get_metadata_row(idx)
         celltype_label_raw = self._get_celltype_label(idx)
@@ -875,7 +875,7 @@ class CellwTextDataset:
 
         return {
             'gene_ids': torch.tensor(gene_ids, dtype=torch.long),
-            'gene_expression': torch.tensor(expression_bins, dtype=torch.long),
+            'gene_expression': torch.tensor(log1p_x, dtype=torch.float32),
             'celltype_label': celltype_label_tensor,
             'texts': caption_text,
             'cell_features': cell_feature,

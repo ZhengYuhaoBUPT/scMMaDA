@@ -32,6 +32,7 @@ from transformers.models.auto import AutoModel, AutoConfig, AutoModelForCausalLM
 from transformers.cache_utils import Cache
 from PIL import Image
 from .cell_feature_soft_tokens import CellFeatureSoftTokenizer
+from .gene_expression_encoder import GeneExpressionValueEncoder
 from .configuration_llada import (
     LLaDAConfig,
     StrEnum,
@@ -116,6 +117,7 @@ class MMadaModelLM(LLaDAModelLM):
         # self.resize_token_embeddings(config.new_vocab_size)
 
         self.cell_feature_soft_tokenizer: Optional[CellFeatureSoftTokenizer] = None
+        self.gene_expression_value_encoder: Optional[GeneExpressionValueEncoder] = None
 
     def init_cell_feature_soft_tokenizer(
             self,
@@ -134,6 +136,21 @@ class MMadaModelLM(LLaDAModelLM):
         ).to(self.get_input_embeddings().weight.device)
         return self.cell_feature_soft_tokenizer
 
+    def init_gene_expression_value_encoder(
+            self,
+            hidden_dim: Optional[int] = None,
+            dropout: float = 0.0,
+            max_value: float = 20.0,
+    ) -> GeneExpressionValueEncoder:
+        embedding_dim = self.get_input_embeddings().weight.shape[1]
+        self.gene_expression_value_encoder = GeneExpressionValueEncoder(
+            output_dim=embedding_dim,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            max_value=max_value,
+        ).to(self.get_input_embeddings().weight.device)
+        return self.gene_expression_value_encoder
+
     def encode_cell_features(self, cell_features: torch.Tensor) -> torch.Tensor:
         if self.cell_feature_soft_tokenizer is None:
             self.init_cell_feature_soft_tokenizer(input_dim=cell_features.shape[-1])
@@ -143,14 +160,46 @@ class MMadaModelLM(LLaDAModelLM):
         soft_tokens = self.cell_feature_soft_tokenizer(cell_features)
         return soft_tokens.to(dtype=self.get_input_embeddings().weight.dtype)
 
+    def encode_gene_expression(self, gene_expression: torch.Tensor) -> torch.Tensor:
+        if self.gene_expression_value_encoder is None:
+            self.init_gene_expression_value_encoder()
+
+        module_param = next(self.gene_expression_value_encoder.parameters())
+        gene_expression = gene_expression.to(device=module_param.device, dtype=module_param.dtype)
+        value_embeds = self.gene_expression_value_encoder(gene_expression)
+        return value_embeds.to(dtype=self.get_input_embeddings().weight.dtype)
+
+    def build_inputs_embeds_with_conditioning(
+            self,
+            input_ids: torch.LongTensor,
+            cell_features: Optional[torch.Tensor] = None,
+            gene_expression: Optional[torch.Tensor] = None,
+            gene_token_start: int = 2,
+    ) -> torch.Tensor:
+        token_embeds = self.get_input_embeddings()(input_ids)
+
+        if gene_expression is not None:
+            value_embeds = self.encode_gene_expression(gene_expression).to(device=token_embeds.device, dtype=token_embeds.dtype)
+            gene_token_length = value_embeds.shape[1]
+            gene_token_end = gene_token_start + gene_token_length
+            if gene_token_end > token_embeds.shape[1]:
+                raise ValueError(
+                    f"Gene expression length {gene_token_length} with start {gene_token_start} exceeds input length {token_embeds.shape[1]}"
+                )
+            token_embeds[:, gene_token_start:gene_token_end, :] = token_embeds[:, gene_token_start:gene_token_end, :] + value_embeds
+
+        if cell_features is not None:
+            soft_tokens = self.encode_cell_features(cell_features).to(device=token_embeds.device, dtype=token_embeds.dtype)
+            token_embeds = torch.cat([soft_tokens, token_embeds], dim=1)
+
+        return token_embeds
+
     def build_inputs_embeds_with_cell_features(
             self,
             input_ids: torch.LongTensor,
             cell_features: torch.Tensor,
     ) -> torch.Tensor:
-        token_embeds = self.get_input_embeddings()(input_ids)
-        soft_tokens = self.encode_cell_features(cell_features).to(device=token_embeds.device, dtype=token_embeds.dtype)
-        return torch.cat([soft_tokens, token_embeds], dim=1)
+        return self.build_inputs_embeds_with_conditioning(input_ids=input_ids, cell_features=cell_features)
 
     @staticmethod
     def extend_attention_mask_for_prefix(
