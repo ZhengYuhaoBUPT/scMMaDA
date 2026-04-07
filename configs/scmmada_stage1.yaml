@@ -1,0 +1,146 @@
+wandb:
+  entity: null
+#  run_id: askkz9i2
+  resume: 'auto'
+
+experiment:
+    project: "scmmada-training-stage1"
+    name: "scmmada-training-stage1-llada-instruct"
+    output_dir: "scmmada-training-stage1-llada-instruct"
+    max_train_examples_t2i: 40000000
+    max_train_examples_mmug: 40000000  # multi-modal understanding for gene expression data
+    max_train_examples_mmu: 40000000
+
+    save_every: 100
+    eval_every: 50
+    generate_every: 50
+    log_every: 10
+
+    # save_every: 10000
+    # eval_every: 2500
+    # generate_every: 1000
+    # log_every: 50
+    log_grad_norm_every: 100
+    resume_from_checkpoint: "latest"
+
+model:
+    vq_model:
+        type: "magvitv2"
+        vq_model_name: "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--showlab--magvitv2/snapshots/5c3fa78f8b3523347c5cd1a4c97f3c4e96f33d5d"
+        # "showlab/magvitv2"
+    mmada:
+        pretrained_model_path: "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07"
+        # "GSAI-ML/LLaDA-8B-Instruct"
+        w_clip_vit: False
+        new_vocab_size: 134656
+        llm_vocab_size: 126464
+        codebook_size: 8192
+        num_vq_tokens: 256
+        num_new_special_tokens: 0
+        tie_word_embeddings: False
+
+    gradient_checkpointing: True
+
+dataset:
+    gen_type: "imagenet1k"
+    und_type: "captioning"
+    combined_loader_mode: "max_size_cycle"
+    params:
+        # CellwText gene expression dataset configuration for multi-modal understanding
+        train_g2t_lmdb_path: "/mnt/c20250607_hs/wanghaoran/wanghaoran/cellwtext_data/CellwText"  # Path to CellwText LMDB data (config name kept for compatibility)
+        gene_vocab_path: "/mnt/c20250607/user/wanghaoran/zyh/datasets/CellwText/scgpt/vocab.json"  # Path to scgpt gene vocabulary
+        celltype_label_path: "/mnt/c20250607/user/wanghaoran/zyh/datasets/CellwText/vocab/celltype_label.json"  # Optional path to cell type labels
+        cell_metadata_path: "/mnt/c20250607/user/wanghaoran/zyh/data_process/cellwtext_captions/captions_compact_5k.json"  # Optional json/csv/tsv metadata with celltype/disease/tissue
+        cell_feature_root: "" # "/home/qijinyin/wanghaoran/zxy/features/okrcell_features"  # Optional H5AD shard directory aligned by shard name + lmdb_key
+        caption_template: null  # Optional format template, e.g. 'This cell is a {celltype}{disease_clause}{tissue_clause}.'
+        lmdb_vocab_path: "/mnt/c20250607/user/wanghaoran/zyh/datasets/CellwText/vocab/gene_vocab.json"  # Path to LMDB vocabulary for ID mapping
+        max_gene_tokens: 1200  # Maximum number of gene tokens per sample
+        num_expression_bins: 51  # Number of bins for expression values
+        # ImageNet and SA-1B data paths
+        train_t2i_shards_path_or_url: "/data/bgi/data/projects/multimodal/zyh/datasets/imagenet-1k/train"
+        # "/data_storage/shared/datasets/imagenet-1k/data/train"
+        train_mmu_shards_path_or_url: [ "/data/bgi/data/projects/multimodal/zyh/datasets/SA-1B/sa_000000.tar",
+                                        "/data/bgi/data/projects/multimodal/zyh/datasets/SA-1B/sa_000000.tar",
+                                        "/data/bgi/data/projects/multimodal/zyh/datasets/SA-1B/sa_000000.tar",
+                                        "/data/bgi/data/projects/multimodal/zyh/datasets/SA-1B/sa_000000.tar",
+                                        "/data/bgi/data/projects/multimodal/zyh/datasets/SA-1B/sa_000000.tar",
+                                        "/data/bgi/data/projects/multimodal/zyh/datasets/SA-1B/sa_000000.tar",
+                                        "/data/bgi/data/projects/multimodal/zyh/datasets/SA-1B/sa_000000.tar",
+                                        "/data/bgi/data/projects/multimodal/zyh/datasets/SA-1B/sa_000000.tar"
+
+                                    #   "/data_storage/shared/datasets/SA-1B/sa_{000000..000999}.tar",
+                                    #     "/data_storage/shared/datasets/cc12m/raw/raw/{0000..0999}.tar",
+                                    #   "/data_storage/shared/datasets/laion-aesthetics-12m/{00000..00999}.tar" 
+        ]
+        train_lm_shards_path_or_url: "/data/bgi/data/projects/multimodal/zyh/datasets/falcon-refinedweb/*.parquet"
+        add_caption_prompt: True
+        external_caption_path: "/data/bgi/data/projects/multimodal/zyh/datasets/SAM-LLaVA-Captions10M"
+        external_journeydb_caption_path: ""
+        external_laion12m_caption_path: ""
+        external_cc12m_caption_path: ""
+        validation_prompts_file: "validation_prompts/imagenet_prompts.txt"
+        mmu_image_root: "/data/bgi/data/projects/multimodal/zyh/datasets/mmu_validation"
+        # shuffle_buffer_size: 1000
+        shuffle_buffer_size: 50
+        num_workers: 0
+        resolution: 256
+        pin_memory: False
+        persistent_workers: False
+
+    preprocessing:
+        max_seq_length: 128 # for text tokens
+        resolution: 256
+        center_crop: False
+        random_flip: False
+
+optimizer:
+    name: adamw
+    params: # default adamw params
+        learning_rate: 0.0001
+        scale_lr: False # scale learning rate by total batch size
+        beta1: 0.9
+        beta2: 0.999
+        weight_decay: 0.01
+        epsilon: 1e-8
+
+lr_scheduler:
+    scheduler: "cosine"
+    params:
+        learning_rate: ${optimizer.params.learning_rate}
+        warmup_steps: 50
+        # warmup_steps: 5000
+        min_lr_scale: 0.1
+
+training:
+    gradient_accumulation_steps: 4
+    # gradient_accumulation_steps: 2
+    noise_type: "mask"
+    # Reduced batch sizes for 4 GPUs (4,5,6,7)
+    batch_size_t2i: 0
+    batch_size_mmug: 3
+    batch_size_lm: 0
+    batch_size_mmu: 0
+    # batch_size_t2i: 7
+    # batch_size_t2i: 3
+    # batch_size_t2i: 3
+    # batch_size_t2i: 7
+    mixed_precision: "bf16"
+    enable_tf32: True
+    seed: 10086
+    # max_train_steps: 500000
+    max_train_steps: 500
+    mmug_only: true
+    unified_seq_len: 2131
+    cell_feature_num_soft_tokens: 1
+    cell_feature_dropout: 0.0
+    overfit_one_batch: False
+    cond_dropout_prob: 0.1
+    min_masking_rate: 0.0
+    label_smoothing: 0.0
+    max_grad_norm: 1
+    guidance_scale: 1.5
+    generation_timesteps: 12
+    t2i_coeff: 1.0
+    mmug_coeff: 1.0  # multi-modal understanding for gene expression data loss coefficient
+    lm_coeff: 0.1
+    mmu_coeff: 1.0
