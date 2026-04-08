@@ -609,8 +609,19 @@ def main():
     ):
         input_ids_t2g, prompt_masks_t2g, labels_t2g = uni_prompting((gene_ids, texts), 't2g')
         b, l = input_ids_t2g.shape
-        prompt_masks_t2g = prompt_masks_t2g.bool()
-        target_masks_t2g = ~prompt_masks_t2g
+        gene_len = gene_ids.shape[1]
+
+        # t2g prompt layout is fixed: [task] [text condition] [soi] [gene tokens] [eoi]
+        # so the target segment is always the final gene_len tokens before the closing <|eoi|>.
+        target_masks_t2g = torch.zeros((b, l), dtype=torch.bool, device=input_ids_t2g.device)
+        target_start = l - gene_len - 1
+        target_end = l - 1
+        if target_start < 0:
+            raise ValueError(f"Invalid t2g layout: seq_len={l}, gene_len={gene_len}")
+        target_masks_t2g[:, target_start:target_end] = True
+
+        labels_t2g = labels_t2g.clone()
+        labels_t2g[~target_masks_t2g] = -100
 
         t = torch.rand(b, device=input_ids_t2g.device)
         p_mask_t2g = (1 - eps) * t + eps
@@ -619,13 +630,11 @@ def main():
         sampled_masks_t2g = (torch.rand((b, l), device=input_ids_t2g.device) < p_mask_t2g) & target_masks_t2g
 
         # Ensure every sample contributes at least one masked gene token.
+        fallback_pos = target_start
         for i in range(b):
             if sampled_masks_t2g[i].any():
                 continue
-            candidate_positions = torch.nonzero(target_masks_t2g[i], as_tuple=False).flatten()
-            if candidate_positions.numel() == 0:
-                continue
-            sampled_masks_t2g[i, candidate_positions[0]] = True
+            sampled_masks_t2g[i, fallback_pos] = True
 
         noisy_batch_t2g = input_ids_t2g.clone()
         noisy_batch_t2g[sampled_masks_t2g] = mask_id
