@@ -608,13 +608,32 @@ def main():
         gene_ids, texts, eps=1e-3
     ):
         input_ids_t2g, prompt_masks_t2g, labels_t2g = uni_prompting((gene_ids, texts), 't2g')
-        (
-            input_ids_t2g,
-            labels_t2g,
-            p_mask_t2g,
-            answer_lengths_t2g,
-        ) = prepare_inputs_and_labels_for_mmu(input_ids_t2g, prompt_masks_t2g, labels_t2g, eps=eps)
-        return input_ids_t2g, labels_t2g, p_mask_t2g, answer_lengths_t2g
+        b, l = input_ids_t2g.shape
+        prompt_masks_t2g = prompt_masks_t2g.bool()
+        target_masks_t2g = ~prompt_masks_t2g
+
+        t = torch.rand(b, device=input_ids_t2g.device)
+        p_mask_t2g = (1 - eps) * t + eps
+        p_mask_t2g = p_mask_t2g[:, None].repeat(1, l)
+
+        sampled_masks_t2g = (torch.rand((b, l), device=input_ids_t2g.device) < p_mask_t2g) & target_masks_t2g
+
+        # Ensure every sample contributes at least one masked gene token.
+        for i in range(b):
+            if sampled_masks_t2g[i].any():
+                continue
+            candidate_positions = torch.nonzero(target_masks_t2g[i], as_tuple=False).flatten()
+            if candidate_positions.numel() == 0:
+                continue
+            sampled_masks_t2g[i, candidate_positions[0]] = True
+
+        noisy_batch_t2g = input_ids_t2g.clone()
+        noisy_batch_t2g[sampled_masks_t2g] = mask_id
+
+        answer_lengths_t2g = target_masks_t2g.to(torch.int64).sum(dim=-1, keepdim=True)
+        answer_lengths_t2g = answer_lengths_t2g.repeat(1, l)
+
+        return noisy_batch_t2g, labels_t2g, p_mask_t2g, answer_lengths_t2g
 
     def compute_masked_diffusion_loss(logits, input_ids_masked, labels_masked, p_mask_masked, answer_lengths_masked):
         masked_indices = input_ids_masked == mask_id
