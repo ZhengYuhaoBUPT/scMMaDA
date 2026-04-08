@@ -795,6 +795,10 @@ def main():
                             input_ids_t2g.shape[0], 1, input_ids_t2g.shape[1], input_ids_t2g.shape[1], device=input_ids_t2g.device
                         )
                         logits_t2g = model(input_ids=input_ids_t2g, attention_bias=attention_bias_t2g).logits
+                        masked_t2g = input_ids_t2g == mask_id
+                        valid_t2g = masked_t2g & (labels_t2g != -100)
+                        t2g_masked_tokens = masked_t2g.sum().detach()
+                        t2g_valid_masked_tokens = valid_t2g.sum().detach()
                         loss_t2g = compute_masked_diffusion_loss(
                             logits_t2g,
                             input_ids_t2g,
@@ -804,9 +808,13 @@ def main():
                         )
                     else:
                         loss_t2g = loss_mmug.new_zeros(())
+                        t2g_masked_tokens = torch.zeros((), device=loss_mmug.device, dtype=torch.long)
+                        t2g_valid_masked_tokens = torch.zeros((), device=loss_mmug.device, dtype=torch.long)
 
                     avg_loss_mmug = accelerator.gather(loss_mmug.repeat(batch_size_mmug_cfg)).mean()
                     avg_loss_t2g = accelerator.gather(loss_t2g.repeat(batch_size_mmug_cfg)).mean()
+                    avg_t2g_masked_tokens = accelerator.gather(t2g_masked_tokens.reshape(1)).float().mean()
+                    avg_t2g_valid_masked_tokens = accelerator.gather(t2g_valid_masked_tokens.reshape(1)).float().mean()
                     loss = (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff) * loss_mmug + \
                            text_to_gene_coeff * loss_t2g
                     loss = loss.mean()
@@ -839,6 +847,8 @@ def main():
                         logs = {
                             "step_loss_mmug": avg_loss_mmug.item(),
                             "step_loss_t2g": avg_loss_t2g.item(),
+                            "t2g_masked_tokens": avg_t2g_masked_tokens.item(),
+                            "t2g_valid_masked_tokens": avg_t2g_valid_masked_tokens.item(),
                             "mmug_batch_size": int(batch_size_mmug),
                             "mmug_active": int(batch_size_mmug > 0),
                             "lr": lr_scheduler.get_last_lr()[0],
@@ -852,6 +862,8 @@ def main():
                             f"Step: {global_step + 1} "
                             f"Loss_mmug: {avg_loss_mmug.item():0.4f} "
                             f"Loss_t2g: {avg_loss_t2g.item():0.4f} "
+                            f"T2G_Masked: {avg_t2g_masked_tokens.item():0.1f} "
+                            f"T2G_Valid: {avg_t2g_valid_masked_tokens.item():0.1f} "
                             f"MMUG_BS: {batch_size_mmug} "
                             f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "
                             f"Batch (t): {batch_time_m.val:0.4f} "
@@ -1049,6 +1061,10 @@ def main():
                         input_ids_t2g.shape[0], 1, input_ids_t2g.shape[1], input_ids_t2g.shape[1], device=input_ids_t2g.device
                     )
                     logits_t2g = model(input_ids=input_ids_t2g, attention_bias=attention_bias_t2g).logits
+                    masked_t2g = input_ids_t2g == mask_id
+                    valid_t2g = masked_t2g & (labels_t2g != -100)
+                    t2g_masked_tokens = masked_t2g.sum().detach()
+                    t2g_valid_masked_tokens = valid_t2g.sum().detach()
                     loss_t2g = compute_masked_diffusion_loss(
                         logits_t2g,
                         input_ids_t2g,
@@ -1058,6 +1074,8 @@ def main():
                     )
                 else:
                     loss_t2g = loss_t2i.new_zeros(())
+                    t2g_masked_tokens = torch.zeros((), device=loss_t2i.device, dtype=torch.long)
+                    t2g_valid_masked_tokens = torch.zeros((), device=loss_t2i.device, dtype=torch.long)
 
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss_t2i = accelerator.gather(loss_t2i.repeat(config.training.batch_size_t2i)).mean()
@@ -1074,6 +1092,8 @@ def main():
                 else:
                     avg_loss_mmug = torch.tensor(0.0, device=loss_t2i.device)
                     avg_loss_t2g = torch.tensor(0.0, device=loss_t2i.device)
+                avg_t2g_masked_tokens = accelerator.gather(t2g_masked_tokens.reshape(1)).float().mean()
+                avg_t2g_valid_masked_tokens = accelerator.gather(t2g_valid_masked_tokens.reshape(1)).float().mean()
                 avg_loss_lm = accelerator.gather(loss_lm.repeat(config.training.batch_size_lm)).mean()
                 avg_loss_mmu = accelerator.gather(loss_mmu.repeat(config.training.batch_size_mmu)).mean()
                 loss = config.training.t2i_coeff * loss_t2i + \
@@ -1117,6 +1137,8 @@ def main():
                         "step_loss_t2i": avg_loss_t2i.item(),
                         "step_loss_mmug": avg_loss_mmug.item(),
                         "step_loss_t2g": avg_loss_t2g.item(),
+                        "t2g_masked_tokens": avg_t2g_masked_tokens.item(),
+                        "t2g_valid_masked_tokens": avg_t2g_valid_masked_tokens.item(),
                         "mmug_batch_size": int(batch_size_mmug),
                         "mmug_active": int(batch_size_mmug > 0),
                         "step_loss_mmu": avg_loss_mmu.item(),
@@ -1134,6 +1156,8 @@ def main():
                         f"Loss_t2i: {avg_loss_t2i.item():0.4f} "
                         f"Loss_mmug: {avg_loss_mmug.item():0.4f} "
                         f"Loss_t2g: {avg_loss_t2g.item():0.4f} "
+                        f"T2G_Masked: {avg_t2g_masked_tokens.item():0.1f} "
+                        f"T2G_Valid: {avg_t2g_valid_masked_tokens.item():0.1f} "
                         f"MMUG_BS: {batch_size_mmug} "
                         f"Loss_mmu: {avg_loss_mmu.item():0.4f} "
                         f"Loss_lm: {avg_loss_lm.item():0.4f} "
