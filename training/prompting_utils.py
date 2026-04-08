@@ -27,6 +27,7 @@ reserved_token_mapping = {
     '<|lvg|>': 126092,
     '[iPAD]': 126093,
     '<|r2i|>': 126094,
+    '<|t2g|>': 126094,  # alias the reverse-modality slot for text-to-gene generation
 }
 
 
@@ -464,35 +465,30 @@ class UniversalPrompting():
             prompt_masks.append(prompt_mask.unsqueeze(0))
         return torch.cat(sequence_ids, dim=0), torch.cat(prompt_masks, dim=0)
 
-    def r2i_prompt(self, image_ids, text_ids):
-        device = image_ids.device
+    def _reverse_modality_prompt(self, modality_ids, text_ids, task_token):
+        device = modality_ids.device
         sequence_ids = []
         prompt_masks = []
-        label_ids = []
-        r2i_id = int(self.sptids_dict['<|r2i|>'])
+        task_id = int(self.sptids_dict[task_token])
         soi_id = int(self.sptids_dict['<|soi|>'])
         eoi_id = int(self.sptids_dict['<|eoi|>'])
         max_text_len = self.max_text_len - 1    # 512，include BOS text EOS
         for i in range(len(text_ids)):
-            # note that, llama3 tokenizer automatically add the bot token at first but without eot
-            # for empty list []
             if len(text_ids[i]) == 0:
                 text_ids[i] = [self.text_tokenizer.bos_token_id]
             elif text_ids[i][0]!= self.text_tokenizer.bos_token_id:
                 text_ids[i] = [self.text_tokenizer.bos_token_id] + text_ids[i]
             text_ids_with_bos_eos = text_ids[i] + [self.text_tokenizer.eos_token_id]
             if max_text_len >= len(text_ids_with_bos_eos):
-                # minus 1 because task token was prepended to the former image tokens
                 text_ids_full_len = text_ids_with_bos_eos + [self.text_tokenizer.eos_token_id] * (max_text_len - len(text_ids_with_bos_eos))
             else:
-                # should add the eos token
                 text_ids_full_len = text_ids_with_bos_eos[:max_text_len - 1] + [self.text_tokenizer.eos_token_id]
-            
+
             sequence_ids.append(torch.cat([
-                torch.tensor([r2i_id]).to(device),  # task token
+                torch.tensor([task_id]).to(device),
                 torch.tensor(text_ids_full_len).to(device),
                 torch.tensor([soi_id]).to(device),
-                image_ids[i],
+                modality_ids[i],
                 torch.tensor([eoi_id]).to(device),
             ], dim=0).unsqueeze(0))
 
@@ -503,18 +499,22 @@ class UniversalPrompting():
                     end_header_pos = pos
                     break
             prompt_mask = torch.zeros(sequence_ids[i].size(1)).to(device)
-            prompt_mask[0] = 1  # task_id
+            prompt_mask[0] = 1
             if end_header_pos != -1:
                 prompt_mask[1:end_header_pos+2] = 1
             else:
                 prompt_mask[1:len(text_ids_full_len)+1] = 1
             prompt_mask[len(text_ids_full_len)+1] = 1
-            prompt_mask[len(text_ids_full_len)+2+len(image_ids[i])] = 1
+            prompt_mask[len(text_ids_full_len)+2+len(modality_ids[i])] = 1
             prompt_masks.append(prompt_mask.unsqueeze(0))
 
         return torch.cat(sequence_ids, dim=0), torch.cat(prompt_masks, dim=0), torch.cat(sequence_ids, dim=0)
-        
-    
+
+    def r2i_prompt(self, image_ids, text_ids):
+        return self._reverse_modality_prompt(image_ids, text_ids, '<|r2i|>')
+
+    def t2g_prompt(self, gene_ids, text_ids):
+        return self._reverse_modality_prompt(gene_ids, text_ids, '<|t2g|>')
 
     def mask_prompt(self):
         pass
@@ -579,6 +579,11 @@ class UniversalPrompting():
             image_ids = input[0]
             text_ids = self.text_tokenizer(input[1])['input_ids']
             sequence_ids_with_masks = self.r2i_prompt(image_ids, text_ids)
+
+        elif task == "t2g":
+            gene_ids = input[0]
+            text_ids = self.text_tokenizer(input[1])['input_ids']
+            sequence_ids_with_masks = self.t2g_prompt(gene_ids, text_ids)
 
         else:
             raise NotImplementedError

@@ -30,10 +30,8 @@ model:
     mmada:
         pretrained_model_path: "GSAI-ML/LLaDA-8B-Instruct"
         w_clip_vit: False
-        new_vocab_size: 134656
+        new_vocab_size: 126465
         llm_vocab_size: 126464
-        codebook_size: 8192
-        num_vq_tokens: 256
         num_new_special_tokens: 0
         tie_word_embeddings: False
 
@@ -140,5 +138,6 @@ training:
     generation_timesteps: 12
     t2i_coeff: 1.0
     mmug_coeff: 1.0  # multi-modal understanding for gene expression data loss coefficient
+    t2g_coeff: 1.0  # text/metadata -> masked gene token reconstruction
     lm_coeff: 0.1
     mmu_coeff: 1.0

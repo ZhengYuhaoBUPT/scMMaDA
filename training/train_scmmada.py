@@ -179,6 +179,7 @@ def main():
     logger.info("Loading models and optimizer")
 
     tokenizer = AutoTokenizer.from_pretrained(config.model.mmada.pretrained_model_path, padding_side="left")
+    use_vq_model = not mmug_only
 
     uni_prompting = UniversalPrompting(tokenizer, max_text_len=config.dataset.preprocessing.max_seq_length,
                                        special_tokens=(
@@ -190,16 +191,18 @@ def main():
 
     print('special tokens : \n', uni_prompting.sptids_dict)
 
-    # VQ model for processing image into discrete tokens
-    vq_model = get_vq_model_class(config.model.vq_model.type)
-    if config.model.vq_model.get("pretrained_model_path", None):
-        vq_model = vq_model().to(accelerator.device)
-        state_dict = torch.load(config.model.vq_model.pretrained_model_path)['model']
-        vq_model.load_state_dict(state_dict)
-    else:
-        vq_model = vq_model.from_pretrained(config.model.vq_model.vq_model_name).to(accelerator.device)
-    vq_model.eval()
-    vq_model.requires_grad_(False)
+    # VQ model is only needed when visual generation/understanding flows are active.
+    vq_model = None
+    if use_vq_model:
+        vq_model = get_vq_model_class(config.model.vq_model.type)
+        if config.model.vq_model.get("pretrained_model_path", None):
+            vq_model = vq_model().to(accelerator.device)
+            state_dict = torch.load(config.model.vq_model.pretrained_model_path)['model']
+            vq_model.load_state_dict(state_dict)
+        else:
+            vq_model = vq_model.from_pretrained(config.model.vq_model.vq_model_name).to(accelerator.device)
+        vq_model.eval()
+        vq_model.requires_grad_(False)
 
     # Initialize mmada in pretraining stage 
     base_config = AutoConfig.from_pretrained(config.model.mmada.pretrained_model_path).to_dict()
@@ -524,7 +527,8 @@ def main():
     logger.info("Preparing model, optimizer and dataloaders")
     model, optimizer, lr_scheduler = accelerator.prepare(model, optimizer, lr_scheduler)
 
-    vq_model.to(device=accelerator.device)
+    if vq_model is not None:
+        vq_model.to(device=accelerator.device)
 
     mask_dtype = model.get_input_embeddings().weight.dtype
 
@@ -599,6 +603,37 @@ def main():
 
         return noisy_batch, labels_mmu, p_mask, answer_lengths
 
+    @torch.no_grad()
+    def prepare_inputs_and_labels_for_t2g(
+        gene_ids, texts, eps=1e-3
+    ):
+        input_ids_t2g, prompt_masks_t2g, labels_t2g = uni_prompting((gene_ids, texts), 't2g')
+        (
+            input_ids_t2g,
+            labels_t2g,
+            p_mask_t2g,
+            answer_lengths_t2g,
+        ) = prepare_inputs_and_labels_for_mmu(input_ids_t2g, prompt_masks_t2g, labels_t2g, eps=eps)
+        return input_ids_t2g, labels_t2g, p_mask_t2g, answer_lengths_t2g
+
+    def compute_masked_diffusion_loss(logits, input_ids_masked, labels_masked, p_mask_masked, answer_lengths_masked):
+        masked_indices = input_ids_masked == mask_id
+        if masked_indices.any():
+            p_mask_for_loss = p_mask_masked.to(masked_indices.device)
+            answer_lengths_for_loss = answer_lengths_masked.to(masked_indices.device)
+            loss_masked = torch.nn.functional.cross_entropy(
+                logits[masked_indices].contiguous().view(-1, logits.shape[-1]),
+                labels_masked[masked_indices].contiguous().view(-1),
+                ignore_index=-100,
+                reduction='none',
+            ) / p_mask_for_loss[masked_indices]
+            loss_masked = torch.sum(
+                loss_masked / answer_lengths_for_loss[masked_indices]
+            ) / logits.shape[0]
+        else:
+            loss_masked = logits.sum() * 0.0
+        return loss_masked
+
 
 
     batch_time_m = AverageMeter()
@@ -636,10 +671,27 @@ def main():
                 ) = prepare_inputs_and_labels_for_mmu(input_ids_mmug, prompt_masks_mmug, labels_mmug)
                 input_ids_mmug = input_ids_mmug.to(accelerator.device, non_blocking=True)
                 labels_mmug = labels_mmug.to(accelerator.device, non_blocking=True)
+                text_to_gene_coeff = float(config.training.get("t2g_coeff", 0.0))
+                input_ids_t2g = None
+                labels_t2g = None
+                p_mask_t2g = None
+                answer_lengths_t2g = None
+                if text_to_gene_coeff > 0.0:
+                    (
+                        input_ids_t2g,
+                        labels_t2g,
+                        p_mask_t2g,
+                        answer_lengths_t2g,
+                    ) = prepare_inputs_and_labels_for_t2g(gene_ids, texts_mmug)
+                    input_ids_t2g = input_ids_t2g.to(accelerator.device, non_blocking=True)
+                    labels_t2g = labels_t2g.to(accelerator.device, non_blocking=True)
 
                 if global_step == 0 and epoch == 0:
                     logger.info("MMUG input ids: {}".format(input_ids_mmug))
                     logger.info("MMUG labels: {}".format(labels_mmug))
+                    if input_ids_t2g is not None:
+                        logger.info("T2G input ids: {}".format(input_ids_t2g))
+                        logger.info("T2G labels: {}".format(labels_t2g))
 
                 with accelerator.accumulate(model):
                     input_ids_for_loss = input_ids_mmug
@@ -730,26 +782,33 @@ def main():
                             }
 
                     logits = model(**model_kwargs).logits
-                    masked_indices_mmug = input_ids_for_loss == accelerator.unwrap_model(model).config.mask_token_id
+                    loss_mmug = compute_masked_diffusion_loss(
+                        logits,
+                        input_ids_for_loss,
+                        labels_for_loss,
+                        p_mask_for_loss,
+                        answer_lengths_for_loss,
+                    )
 
-                    if masked_indices_mmug.any():
-                        p_mask_mmug_for_loss = p_mask_for_loss.to(masked_indices_mmug.device)
-                        answer_lengths_mmug_for_loss = answer_lengths_for_loss.to(masked_indices_mmug.device)
-                        loss_mmug = torch.nn.functional.cross_entropy(
-                            logits[masked_indices_mmug].contiguous().view(-1, logits.shape[-1]),
-                            labels_for_loss[masked_indices_mmug].contiguous().view(-1),
-                            ignore_index=-100,
-                            reduction='none',
-                        ) / p_mask_mmug_for_loss[masked_indices_mmug]
-                        loss_mmug = torch.sum(
-                            loss_mmug / answer_lengths_mmug_for_loss[masked_indices_mmug]
-                        ) / logits.shape[0]
+                    if input_ids_t2g is not None:
+                        attention_bias_t2g = torch.ones(
+                            input_ids_t2g.shape[0], 1, input_ids_t2g.shape[1], input_ids_t2g.shape[1], device=input_ids_t2g.device
+                        )
+                        logits_t2g = model(input_ids=input_ids_t2g, attention_bias=attention_bias_t2g).logits
+                        loss_t2g = compute_masked_diffusion_loss(
+                            logits_t2g,
+                            input_ids_t2g,
+                            labels_t2g,
+                            p_mask_t2g,
+                            answer_lengths_t2g,
+                        )
                     else:
-                        # Keep grad_fn for DeepSpeed even when this micro-batch has no masked token.
-                        loss_mmug = logits.sum() * 0.0
+                        loss_t2g = loss_mmug.new_zeros(())
 
                     avg_loss_mmug = accelerator.gather(loss_mmug.repeat(batch_size_mmug_cfg)).mean()
-                    loss = (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff) * loss_mmug
+                    avg_loss_t2g = accelerator.gather(loss_t2g.repeat(batch_size_mmug_cfg)).mean()
+                    loss = (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff) * loss_mmug + \
+                           text_to_gene_coeff * loss_t2g
                     loss = loss.mean()
 
                     accelerator.backward(loss)
@@ -779,6 +838,7 @@ def main():
                         )
                         logs = {
                             "step_loss_mmug": avg_loss_mmug.item(),
+                            "step_loss_t2g": avg_loss_t2g.item(),
                             "mmug_batch_size": int(batch_size_mmug),
                             "mmug_active": int(batch_size_mmug > 0),
                             "lr": lr_scheduler.get_last_lr()[0],
@@ -791,6 +851,7 @@ def main():
                         logger.info(
                             f"Step: {global_step + 1} "
                             f"Loss_mmug: {avg_loss_mmug.item():0.4f} "
+                            f"Loss_t2g: {avg_loss_t2g.item():0.4f} "
                             f"MMUG_BS: {batch_size_mmug} "
                             f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "
                             f"Batch (t): {batch_time_m.val:0.4f} "
@@ -849,6 +910,10 @@ def main():
             labels_mmug = None
             p_mask_mmug = None
             answer_lengths_mmug = None
+            input_ids_t2g = None
+            labels_t2g = None
+            p_mask_t2g = None
+            answer_lengths_t2g = None
             if "mmug_flow" in batch:
                 gene_ids = batch["mmug_flow"]["gene_ids"].to(accelerator.device, non_blocking=True)
                 texts_mmug = batch["mmug_flow"].get("texts", [""] * gene_ids.shape[0])
@@ -863,6 +928,15 @@ def main():
                 ) = prepare_inputs_and_labels_for_mmu(input_ids_mmug, prompt_masks_mmug, labels_mmug)
                 input_ids_mmug = input_ids_mmug.to(accelerator.device, non_blocking=True)
                 labels_mmug = labels_mmug.to(accelerator.device, non_blocking=True)
+                if float(config.training.get("t2g_coeff", 0.0)) > 0.0:
+                    (
+                        input_ids_t2g,
+                        labels_t2g,
+                        p_mask_t2g,
+                        answer_lengths_t2g,
+                    ) = prepare_inputs_and_labels_for_t2g(gene_ids, texts_mmug)
+                    input_ids_t2g = input_ids_t2g.to(accelerator.device, non_blocking=True)
+                    labels_t2g = labels_t2g.to(accelerator.device, non_blocking=True)
 
             # *-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*
             # Build formatted sequences for captioning/multimodal understanding
@@ -970,6 +1044,20 @@ def main():
                     answer_lengths_mmug=answer_lengths_mmug,
                     t2i_masks=t2i_masks
                 )
+                if input_ids_t2g is not None:
+                    attention_bias_t2g = torch.ones(
+                        input_ids_t2g.shape[0], 1, input_ids_t2g.shape[1], input_ids_t2g.shape[1], device=input_ids_t2g.device
+                    )
+                    logits_t2g = model(input_ids=input_ids_t2g, attention_bias=attention_bias_t2g).logits
+                    loss_t2g = compute_masked_diffusion_loss(
+                        logits_t2g,
+                        input_ids_t2g,
+                        labels_t2g,
+                        p_mask_t2g,
+                        answer_lengths_t2g,
+                    )
+                else:
+                    loss_t2g = loss_t2i.new_zeros(())
 
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss_t2i = accelerator.gather(loss_t2i.repeat(config.training.batch_size_t2i)).mean()
@@ -982,12 +1070,15 @@ def main():
                         )
                     )
                     avg_loss_mmug = accelerator.gather(loss_mmug.repeat(mmug_bs_for_log)).mean()
+                    avg_loss_t2g = accelerator.gather(loss_t2g.repeat(mmug_bs_for_log)).mean()
                 else:
                     avg_loss_mmug = torch.tensor(0.0, device=loss_t2i.device)
+                    avg_loss_t2g = torch.tensor(0.0, device=loss_t2i.device)
                 avg_loss_lm = accelerator.gather(loss_lm.repeat(config.training.batch_size_lm)).mean()
                 avg_loss_mmu = accelerator.gather(loss_mmu.repeat(config.training.batch_size_mmu)).mean()
                 loss = config.training.t2i_coeff * loss_t2i + \
                        (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff) * loss_mmug + \
+                       float(config.training.get("t2g_coeff", 0.0)) * loss_t2g + \
                        config.training.lm_coeff * loss_lm + \
                        config.training.mmu_coeff * loss_mmu
 
@@ -1025,6 +1116,7 @@ def main():
                     logs = {
                         "step_loss_t2i": avg_loss_t2i.item(),
                         "step_loss_mmug": avg_loss_mmug.item(),
+                        "step_loss_t2g": avg_loss_t2g.item(),
                         "mmug_batch_size": int(batch_size_mmug),
                         "mmug_active": int(batch_size_mmug > 0),
                         "step_loss_mmu": avg_loss_mmu.item(),
@@ -1041,6 +1133,7 @@ def main():
                         f"Step: {global_step + 1} "
                         f"Loss_t2i: {avg_loss_t2i.item():0.4f} "
                         f"Loss_mmug: {avg_loss_mmug.item():0.4f} "
+                        f"Loss_t2g: {avg_loss_t2g.item():0.4f} "
                         f"MMUG_BS: {batch_size_mmug} "
                         f"Loss_mmu: {avg_loss_mmu.item():0.4f} "
                         f"Loss_lm: {avg_loss_lm.item():0.4f} "
