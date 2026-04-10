@@ -509,7 +509,10 @@ def main():
     #################################
     global_step = 0
     first_epoch = 0
-    checkpoint_strict = not bool(config.dataset.params.get("cell_feature_root", None))
+    # Resume old checkpoints with strict=False by default, because new conditioning modules
+    # (e.g., gene_expression_value_encoder / cell feature tokenizer) may be absent in older runs.
+    checkpoint_strict = bool(config.experiment.get("checkpoint_strict", False))
+    logger.info(f"Checkpoint strict loading: {checkpoint_strict}")
 
     if config.experiment.resume_from_checkpoint:
         dirs = os.listdir(config.experiment.output_dir)
@@ -528,7 +531,7 @@ def main():
                 load_result = model.load_state_dict(state_dict, strict=checkpoint_strict)
                 if not checkpoint_strict:
                     logger.warning(
-                        "Loaded checkpoint with strict=False to allow newly added cell_feature_soft_tokenizer parameters. "
+                        "Loaded checkpoint with strict=False to allow newly added conditioning modules. "
                         f"Missing keys: {list(load_result.missing_keys)[:20]}"
                     )
                 del state_dict
@@ -538,7 +541,7 @@ def main():
                 load_sharded_checkpoint(model, f'{path}/unwrapped_model/', strict=checkpoint_strict)
                 if not checkpoint_strict:
                     logger.warning(
-                        "Loaded sharded checkpoint with strict=False to allow newly added cell_feature_soft_tokenizer parameters."
+                        "Loaded sharded checkpoint with strict=False to allow newly added conditioning modules."
                     )
             # if safetensors sharded checkpoint exists
             elif os.path.exists(f'{path}/unwrapped_model/model.safetensors.index.json'):
@@ -552,7 +555,7 @@ def main():
                 )
                 if not checkpoint_strict:
                     logger.warning(
-                        "Loaded safetensors sharded checkpoint with strict=False to allow newly added cell_feature_soft_tokenizer parameters."
+                        "Loaded safetensors sharded checkpoint with strict=False to allow newly added conditioning modules."
                     )
             else:
                 raise FileNotFoundError(f"Checkpoint {path}/unwrapped_model/pytorch_model.bin not found")
