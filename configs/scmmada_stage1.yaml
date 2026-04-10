@@ -11,7 +11,7 @@ experiment:
     max_train_examples_mmug: 40000000  # multi-modal understanding for gene expression data
     max_train_examples_mmu: 40000000
 
-    save_every: 100
+    save_every: 200
     eval_every: 50
     generate_every: 50
     log_every: 10
@@ -112,13 +112,13 @@ lr_scheduler:
         min_lr_scale: 0.1
 
 training:
-    gradient_accumulation_steps: 4
+    gradient_accumulation_steps: 8
     # gradient_accumulation_steps: 2
     noise_type: "mask"
     # Reduced batch sizes for 4 GPUs (4,5,6,7)
     batch_size_t2i: 0
-    batch_size_mmug: 3
-    batch_size_t2g: 3
+    batch_size_mmug: 2
+    batch_size_t2g: 1
     batch_size_lm: 0
     batch_size_mmu: 0
     # batch_size_t2i: 7
@@ -129,7 +129,7 @@ training:
     enable_tf32: True
     seed: 10086
     # max_train_steps: 500000
-    max_train_steps: 500
+    max_train_steps: 50000
     mmug_only: true
     unified_seq_len: 2131
     cell_feature_num_soft_tokens: 1

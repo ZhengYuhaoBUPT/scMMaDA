@@ -6,6 +6,7 @@ logs/
 mmada-training-*/
 *.safetensors
 scmmada-training*
+old*
 
 .sand*
 .claude*
