@@ -712,16 +712,25 @@ def main():
         p_mask = (1 - eps) * t + eps
         p_mask = p_mask[:, None].repeat(1, l)
 
-        masked_indices = torch.rand((b, l), device=input_ids_mmu.device) < p_mask
-        # 126336 is used for [MASK] token 
-        noisy_batch = torch.where(masked_indices, mask_id, input_ids_mmu)
-        masked_indices = noisy_batch == mask_id 
-        noisy_batch[prompt_masks.bool()] = input_ids_mmu[prompt_masks.bool()]
-        masked_indices = noisy_batch == mask_id 
+        prompt_masks_bool = prompt_masks.bool()
+        target_masks = ~prompt_masks_bool
+        masked_indices = (torch.rand((b, l), device=input_ids_mmu.device) < p_mask) & target_masks
 
-        prompt_masks = prompt_masks.to(torch.int64)    
+        # Ensure every sample contributes at least one masked non-prompt token.
+        for i in range(b):
+            if masked_indices[i].any():
+                continue
+            valid_positions = torch.nonzero(target_masks[i], as_tuple=False).flatten()
+            if valid_positions.numel() == 0:
+                raise ValueError("MMUG sample has no non-prompt target positions to mask.")
+            masked_indices[i, valid_positions[0]] = True
+
+        # 126336 is used for [MASK] token
+        noisy_batch = torch.where(masked_indices, mask_id, input_ids_mmu)
+
+        prompt_masks = prompt_masks.to(torch.int64)
         answer_lengths = torch.sum((1 - prompt_masks), dim=-1, keepdim=True)
-        answer_lengths = answer_lengths.repeat(1, noisy_batch.shape[1])    
+        answer_lengths = answer_lengths.repeat(1, noisy_batch.shape[1])
 
         return noisy_batch, labels_mmu, p_mask, answer_lengths
 
