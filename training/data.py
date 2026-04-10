@@ -852,34 +852,31 @@ class CellwTextDataset:
 
             pairs = list(zip(gene_ids_lmdb, log1p_x))
 
-            # Keep the most informative genes under fixed token budget: top-k by log1p expression.
-            # Keep descending-by-expression order directly.
-            if len(pairs) > self.max_gene_tokens:
-                topk_indices = sorted(
-                    range(len(pairs)),
-                    key=lambda i: pairs[i][1],
-                    reverse=True,
-                )[:self.max_gene_tokens]
-                pairs = [pairs[i] for i in topk_indices]
-
+            # Map first, then take top-k by expression.
+            # This avoids losing valid capacity when some of the top-k raw ids are unmapped.
             if self.lmdb_id2scgpt_id is not None:
-                mapped_pairs = [
+                mapped_pairs_all = [
                     (self.lmdb_id2scgpt_id[lmdb_id], expr)
                     for lmdb_id, expr in pairs
                     if lmdb_id in self.lmdb_id2scgpt_id
                 ]
             else:
-                mapped_pairs = pairs
+                mapped_pairs_all = pairs
 
-            if len(mapped_pairs) < self.max_gene_tokens:
+            if len(mapped_pairs_all) < self.max_gene_tokens:
                 last_reason = (
                     f"Insufficient mapped genes at idx {cur_idx}: "
-                    f"raw={len(gene_ids_lmdb)}, mapped={len(mapped_pairs)}, need={self.max_gene_tokens}"
+                    f"raw={len(gene_ids_lmdb)}, mapped_all={len(mapped_pairs_all)}, need={self.max_gene_tokens}"
                 )
                 cur_idx = random.randint(0, self.length - 1)
                 continue
 
-            mapped_pairs = mapped_pairs[:self.max_gene_tokens]
+            topk_indices = sorted(
+                range(len(mapped_pairs_all)),
+                key=lambda i: mapped_pairs_all[i][1],
+                reverse=True,
+            )[:self.max_gene_tokens]
+            mapped_pairs = [mapped_pairs_all[i] for i in topk_indices]
             gene_ids = [int(gid) for gid, _ in mapped_pairs]
             gene_expr = [float(expr) for _, expr in mapped_pairs]
 
