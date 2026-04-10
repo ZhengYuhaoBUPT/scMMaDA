@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 import json
+import itertools
 import logging
 import math
 import shutil
@@ -426,7 +427,7 @@ def main():
             caption_template=dataset_config.get('caption_template', None),
             batch_size=batch_size_mmug_cfg,
             num_workers=dataset_config.num_workers,
-            shuffle=True,
+            shuffle=False,
             pin_memory=dataset_config.pin_memory,
         )
         train_dataloader_mmug = dataset_mmug.get_dataloader()
@@ -450,7 +451,7 @@ def main():
                 caption_template=dataset_config.get('caption_template', None),
                 batch_size=batch_size_t2g_cfg,
                 num_workers=dataset_config.num_workers,
-                shuffle=True,
+                shuffle=False,
                 pin_memory=dataset_config.pin_memory,
             )
             train_dataloader_t2g = dataset_t2g.get_dataloader()
@@ -509,6 +510,9 @@ def main():
     #################################
     global_step = 0
     first_epoch = 0
+    resume_step_in_epoch = 0
+    resume_path = None
+    resume_with_full_state = False
     # Resume old checkpoints with strict=False by default, because new conditioning modules
     # (e.g., gene_expression_value_encoder / cell feature tokenizer) may be absent in older runs.
     checkpoint_strict = bool(config.experiment.get("checkpoint_strict", False))
@@ -523,10 +527,17 @@ def main():
         logger.info(f"path: {path}")
         if path is not None:
             path = os.path.join(config.experiment.output_dir, path)
+            resume_path = path
             logger.info(f"Resuming from checkpoint: {path}")
             global_step = int(os.path.basename(path).split("-")[1])
             first_epoch = global_step // num_update_steps_per_epoch
-            if os.path.exists(f'{path}/unwrapped_model/pytorch_model.bin'):
+            resume_step_in_epoch = global_step % num_update_steps_per_epoch
+
+            full_state_dir = os.path.join(path, "training_state")
+            if os.path.isdir(full_state_dir):
+                resume_with_full_state = True
+                logger.info(f"Found full training state at {full_state_dir}; will restore after accelerator.prepare")
+            elif os.path.exists(f'{path}/unwrapped_model/pytorch_model.bin'):
                 state_dict = torch.load(f'{path}/unwrapped_model/pytorch_model.bin', map_location="cpu")
                 load_result = model.load_state_dict(state_dict, strict=checkpoint_strict)
                 if not checkpoint_strict:
@@ -567,6 +578,11 @@ def main():
     #################################
     logger.info("Preparing model, optimizer and dataloaders")
     model, optimizer, lr_scheduler = accelerator.prepare(model, optimizer, lr_scheduler)
+
+    if resume_with_full_state and resume_path is not None:
+        state_dir = os.path.join(resume_path, "training_state")
+        logger.info(f"Loading full training state from {state_dir}")
+        accelerator.load_state(state_dir)
 
     if vq_model is not None:
         vq_model.to(device=accelerator.device)
@@ -711,7 +727,17 @@ def main():
 
     for epoch in range(first_epoch, num_train_epochs):
         model.train()
-        for batch, batch_idx, dataloader_idx in combined_dataloader:
+        epoch_iterator = combined_dataloader
+        if epoch == first_epoch and resume_step_in_epoch > 0:
+            skip_batches = resume_step_in_epoch * config.training.gradient_accumulation_steps
+            logger.info(
+                f"Resuming dataloader position: skipping {skip_batches} micro-batches "
+                f"({resume_step_in_epoch} optimizer steps) in epoch {epoch}"
+            )
+            epoch_iterator = itertools.islice(combined_dataloader, skip_batches, None)
+            resume_step_in_epoch = 0
+
+        for batch, batch_idx, dataloader_idx in epoch_iterator:
             # for loss calculation
             batch_size_t2i = batch["t2i_flow"]["images"].shape[0] if "t2i_flow" in batch else 0
             batch_size_mmug = batch["mmug_flow"]["gene_ids"].shape[0] if "mmug_flow" in batch else 0
@@ -1552,6 +1578,11 @@ def save_checkpoint(model, config, accelerator, global_step):
             safe_serialization=True
         )
         json.dump({"global_step": global_step}, (save_path / "metadata.json").open("w+"))
+
+    # Save full trainer state (model/optimizer/lr_scheduler/rng/scaler) for reproducible resume.
+    accelerator.save_state(str(save_path / "training_state"))
+
+    if accelerator.is_main_process:
         logger.info(f"Saved state to {save_path}")
 
 
