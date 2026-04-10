@@ -243,6 +243,13 @@ def main():
     model.config.embedding_size = model.config.vocab_size
     model = model.to(accelerator.device)
 
+    # Initialize conditioning modules before optimizer creation so their parameters
+    # are always included in optimizer param groups when enabled by the run config.
+    model.init_gene_expression_value_encoder(
+        hidden_dim=config.training.get("gene_expression_hidden_dim", None),
+        dropout=float(config.training.get("gene_expression_dropout", 0.0)),
+        max_value=float(config.training.get("gene_expression_max_value", 20.0)),
+    )
     if config.dataset.params.get("cell_feature_root", None):
         model.init_cell_feature_soft_tokenizer(
             input_dim=int(config.dataset.params.get("cell_feature_dim", 768)),
@@ -861,31 +868,28 @@ def main():
                     model_kwargs = {"attention_bias": attention_bias_mmug}
                     if cell_features_mmug is not None:
                         unwrapped_model = accelerator.unwrap_model(model)
-                        num_soft_tokens = int(config.training.get("cell_feature_num_soft_tokens", 4))
-                        hidden_dim = config.training.get("cell_feature_hidden_dim", None)
-                        dropout = float(config.training.get("cell_feature_dropout", 0.0))
-                        if (
-                            getattr(unwrapped_model, "cell_feature_soft_tokenizer", None) is None
-                            or unwrapped_model.cell_feature_soft_tokenizer.num_soft_tokens != num_soft_tokens
-                            or unwrapped_model.cell_feature_soft_tokenizer.input_dim != cell_features_mmug.shape[-1]
-                        ):
-                            unwrapped_model.init_cell_feature_soft_tokenizer(
-                                input_dim=cell_features_mmug.shape[-1],
-                                num_soft_tokens=num_soft_tokens,
-                                hidden_dim=hidden_dim,
-                                dropout=dropout,
+                        cell_feature_soft_tokenizer = getattr(unwrapped_model, "cell_feature_soft_tokenizer", None)
+                        if cell_feature_soft_tokenizer is None:
+                            raise RuntimeError(
+                                "cell_feature_soft_tokenizer must be initialized before optimizer creation when cell features are enabled."
                             )
-                        gene_expr_hidden_dim = config.training.get("gene_expression_hidden_dim", None)
-                        gene_expr_dropout = float(config.training.get("gene_expression_dropout", 0.0))
-                        gene_expr_max_value = float(config.training.get("gene_expression_max_value", 20.0))
+                        expected_num_soft_tokens = int(config.training.get("cell_feature_num_soft_tokens", 4))
+                        if cell_feature_soft_tokenizer.num_soft_tokens != expected_num_soft_tokens:
+                            raise ValueError(
+                                f"Configured cell_feature_num_soft_tokens={expected_num_soft_tokens}, "
+                                f"but initialized projector uses {cell_feature_soft_tokenizer.num_soft_tokens}."
+                            )
+                        if cell_feature_soft_tokenizer.input_dim != cell_features_mmug.shape[-1]:
+                            raise ValueError(
+                                f"Cell feature dim mismatch: projector expects {cell_feature_soft_tokenizer.input_dim}, "
+                                f"but batch provides {cell_features_mmug.shape[-1]}."
+                            )
                         if getattr(unwrapped_model, "gene_expression_value_encoder", None) is None:
-                            unwrapped_model.init_gene_expression_value_encoder(
-                                hidden_dim=gene_expr_hidden_dim,
-                                dropout=gene_expr_dropout,
-                                max_value=gene_expr_max_value,
+                            raise RuntimeError(
+                                "gene_expression_value_encoder must be initialized before optimizer creation."
                             )
 
-                        prefix_length = unwrapped_model.cell_feature_soft_tokenizer.num_soft_tokens
+                        prefix_length = cell_feature_soft_tokenizer.num_soft_tokens
                         pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
                         prefix_ids = torch.full(
                             (input_ids_mmug.shape[0], prefix_length),
@@ -912,14 +916,9 @@ def main():
                     else:
                         if gene_expression_mmug is not None:
                             unwrapped_model = accelerator.unwrap_model(model)
-                            gene_expr_hidden_dim = config.training.get("gene_expression_hidden_dim", None)
-                            gene_expr_dropout = float(config.training.get("gene_expression_dropout", 0.0))
-                            gene_expr_max_value = float(config.training.get("gene_expression_max_value", 20.0))
                             if getattr(unwrapped_model, "gene_expression_value_encoder", None) is None:
-                                unwrapped_model.init_gene_expression_value_encoder(
-                                    hidden_dim=gene_expr_hidden_dim,
-                                    dropout=gene_expr_dropout,
-                                    max_value=gene_expr_max_value,
+                                raise RuntimeError(
+                                    "gene_expression_value_encoder must be initialized before optimizer creation."
                                 )
                             inputs_embeds_mmug = unwrapped_model.build_inputs_embeds_with_conditioning(
                                 input_ids=input_ids_mmug,

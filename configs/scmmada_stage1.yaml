@@ -51,7 +51,7 @@ dataset:
         gene_vocab_path: "/mnt/c20250607/user/wanghaoran/zyh/datasets/CellwText/scgpt/vocab.json"  # Path to scgpt gene vocabulary
         celltype_label_path: "/mnt/c20250607/user/wanghaoran/zyh/datasets/CellwText/vocab/celltype_label.json"  # Optional path to cell type labels
         cell_metadata_path: "/mnt/c20250607/user/wanghaoran/zyh/data_process/cellwtext_captions/captions_compact_5k.json"  # Optional json/csv/tsv metadata with celltype/disease/tissue
-        cell_feature_root: "" # "/home/qijinyin/wanghaoran/zxy/features/okrcell_features"  # Optional H5AD shard directory aligned by shard name + lmdb_key
+        cell_feature_root: "/mnt/c20250607/user/wanghaoran/zxy/data_and_features/zxy/features/okrcell_features"  # Optional H5AD shard directory aligned by shard name + lmdb_key
         caption_template: null  # Optional format template, e.g. 'This cell is a {celltype}{disease_clause}{tissue_clause}.'
         lmdb_vocab_path: "/mnt/c20250607/user/wanghaoran/zyh/datasets/CellwText/vocab/gene_vocab.json"  # Path to LMDB vocabulary for ID mapping
         max_gene_tokens: 1200  # Maximum number of gene tokens per sample
