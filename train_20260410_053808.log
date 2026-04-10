@@ -1,0 +1,279 @@
+W0410 05:38:20.475000 6453 site-packages/torch/distributed/run.py:852] 
+W0410 05:38:20.475000 6453 site-packages/torch/distributed/run.py:852] *****************************************
+W0410 05:38:20.475000 6453 site-packages/torch/distributed/run.py:852] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0410 05:38:20.475000 6453 site-packages/torch/distributed/run.py:852] *****************************************
+/mnt/c20250607/user/wanghaoran/envs/envs/zyh/lib/python3.10/site-packages/accelerate/utils/dataclasses.py:1301: UserWarning: DeepSpeed Zero3 Init flag is only applicable for ZeRO Stage 3. Setting it to False.
+  warnings.warn("DeepSpeed Zero3 Init flag is only applicable for ZeRO Stage 3. Setting it to False.")
+/mnt/c20250607/user/wanghaoran/envs/envs/zyh/lib/python3.10/site-packages/accelerate/utils/dataclasses.py:1301: UserWarning: DeepSpeed Zero3 Init flag is only applicable for ZeRO Stage 3. Setting it to False.
+  warnings.warn("DeepSpeed Zero3 Init flag is only applicable for ZeRO Stage 3. Setting it to False.")
+/mnt/c20250607/user/wanghaoran/envs/envs/zyh/lib/python3.10/site-packages/accelerate/utils/dataclasses.py:1301: UserWarning: DeepSpeed Zero3 Init flag is only applicable for ZeRO Stage 3. Setting it to False.
+  warnings.warn("DeepSpeed Zero3 Init flag is only applicable for ZeRO Stage 3. Setting it to False.")
+04/10/2026 05:38:36 - INFO - __main__ - Distributed environment: DEEPSPEED  Backend: nccl
+Num processes: 3
+Process index: 1
+Local process index: 1
+Device: cuda:1
+
+Mixed precision type: bf16
+ds_config: {'train_batch_size': 'auto', 'train_micro_batch_size_per_gpu': 2, 'gradient_accumulation_steps': 1, 'zero_optimization': {'stage': 2, 'offload_optimizer': {'device': 'cpu', 'nvme_path': None}, 'offload_param': {'device': 'cpu', 'nvme_path': None}, 'stage3_gather_16bit_weights_on_model_save': False}, 'gradient_clipping': 1.0, 'steps_per_print': inf, 'bf16': {'enabled': True}, 'fp16': {'enabled': False}}
+
+04/10/2026 05:38:36 - INFO - __main__ - Distributed environment: DEEPSPEED  Backend: nccl
+Num processes: 3
+Process index: 2
+Local process index: 2
+Device: cuda:2
+
+Mixed precision type: bf16
+ds_config: {'train_batch_size': 'auto', 'train_micro_batch_size_per_gpu': 2, 'gradient_accumulation_steps': 1, 'zero_optimization': {'stage': 2, 'offload_optimizer': {'device': 'cpu', 'nvme_path': None}, 'offload_param': {'device': 'cpu', 'nvme_path': None}, 'stage3_gather_16bit_weights_on_model_save': False}, 'gradient_clipping': 1.0, 'steps_per_print': inf, 'bf16': {'enabled': True}, 'fp16': {'enabled': False}}
+
+04/10/2026 05:38:36 - INFO - __main__ - Distributed environment: DEEPSPEED  Backend: nccl
+Num processes: 3
+Process index: 0
+Local process index: 0
+Device: cuda:0
+
+Mixed precision type: bf16
+ds_config: {'train_batch_size': 'auto', 'train_micro_batch_size_per_gpu': 2, 'gradient_accumulation_steps': 1, 'zero_optimization': {'stage': 2, 'offload_optimizer': {'device': 'cpu', 'nvme_path': None}, 'offload_param': {'device': 'cpu', 'nvme_path': None}, 'stage3_gather_16bit_weights_on_model_save': False}, 'gradient_clipping': 1.0, 'steps_per_print': inf, 'bf16': {'enabled': True}, 'fp16': {'enabled': False}}
+
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /root/.netrc.
+self.sptids_dict: {'<|soi|>': tensor([126084]), '<|eoi|>': tensor([126085]), '<|sov|>': tensor([126086]), '<|eov|>': tensor([126087]), '<|t2i|>': tensor([126088]), '<|mmug|>': tensor([126464]), '<|mmu|>': tensor([126089]), '<|t2v|>': tensor([126090]), '<|v2v|>': tensor([126091]), '<|lvg|>': tensor([126092]), '[iPAD]': tensor([126093]), '<|r2i|>': tensor([126094]), '<|t2g|>': tensor([126094]), '<|sot|>': tensor([126080]), '<|eot|>': tensor([126081]), '<|end_header_id|>': tensor([126347]), '<|eot_id|>': tensor([126348]), '<|start_header_id|>': tensor([126346])}
+special tokens : 
+ {'<|soi|>': tensor([126084]), '<|eoi|>': tensor([126085]), '<|sov|>': tensor([126086]), '<|eov|>': tensor([126087]), '<|t2i|>': tensor([126088]), '<|mmug|>': tensor([126464]), '<|mmu|>': tensor([126089]), '<|t2v|>': tensor([126090]), '<|v2v|>': tensor([126091]), '<|lvg|>': tensor([126092]), '[iPAD]': tensor([126093]), '<|r2i|>': tensor([126094]), '<|t2g|>': tensor([126094]), '<|sot|>': tensor([126080]), '<|eot|>': tensor([126081]), '<|end_header_id|>': tensor([126347]), '<|eot_id|>': tensor([126348]), '<|start_header_id|>': tensor([126346])}
+Initializing MMadaModelLM with config: MMadaConfig {
+  "_attn_implementation_autoset": true,
+  "_name_or_path": "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07",
+  "activation_type": "silu",
+  "alibi": false,
+  "alibi_bias_max": 8.0,
+  "architectures": [
+    "LLaDAModelLM"
+  ],
+  "attention_dropout": 0.0,
+  "attention_layer_norm": false,
+  "attention_layer_norm_with_affine": true,
+  "auto_map": {
+    "AutoConfig": "configuration_llada.LLaDAConfig",
+    "AutoModel": "modeling_llada.LLaDAModelLM",
+    "AutoModelForCausalLM": "modeling_llada.LLaDAModelLM"
+  },
+  "bias_for_layer_norm": false,
+  "block_group_size": 1,
+  "block_type": "llama",
+  "codebook_size": 8192,
+  "d_model": 4096,
+  "embedding_dropout": 0.0,
+  "embedding_size": 126464,
+  "eos_token_id": 126081,
+  "flash_attention": false,
+  "include_bias": false,
+  "include_qkv_bias": false,
+  "init_cutoff_factor": null,
+  "init_device": "meta",
+  "init_fn": "mitchell",
+  "init_std": 0.02,
+  "input_emb_norm": false,
+  "layer_norm_type": "rms",
+  "layer_norm_with_affine": true,
+  "llm_vocab_size": 126464,
+  "mask_token_id": 126336,
+  "max_sequence_length": 4096,
+  "mlp_hidden_size": 12288,
+  "mlp_ratio": 4,
+  "model_type": "mmada",
+  "multi_query_attention": null,
+  "n_heads": 32,
+  "n_kv_heads": 32,
+  "n_layers": 32,
+  "new_vocab_size": 134656,
+  "num_new_special_tokens": 0,
+  "num_vq_tokens": 256,
+  "pad_token_id": 126081,
+  "precision": "amp_bf16",
+  "pretrained_model_path": "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07",
+  "residual_dropout": 0.0,
+  "rms_norm_eps": 1e-05,
+  "rope": true,
+  "rope_full_precision": true,
+  "rope_theta": 500000.0,
+  "scale_logits": false,
+  "tie_word_embeddings": false,
+  "transformers_version": "4.46.0",
+  "use_cache": false,
+  "vocab_size": 126464,
+  "w_clip_vit": false,
+  "weight_tying": false
+}
+
+self.sptids_dict: {'<|soi|>': tensor([126084]), '<|eoi|>': tensor([126085]), '<|sov|>': tensor([126086]), '<|eov|>': tensor([126087]), '<|t2i|>': tensor([126088]), '<|mmug|>': tensor([126464]), '<|mmu|>': tensor([126089]), '<|t2v|>': tensor([126090]), '<|v2v|>': tensor([126091]), '<|lvg|>': tensor([126092]), '[iPAD]': tensor([126093]), '<|r2i|>': tensor([126094]), '<|t2g|>': tensor([126094]), '<|sot|>': tensor([126080]), '<|eot|>': tensor([126081]), '<|end_header_id|>': tensor([126347]), '<|eot_id|>': tensor([126348]), '<|start_header_id|>': tensor([126346])}
+special tokens : 
+ {'<|soi|>': tensor([126084]), '<|eoi|>': tensor([126085]), '<|sov|>': tensor([126086]), '<|eov|>': tensor([126087]), '<|t2i|>': tensor([126088]), '<|mmug|>': tensor([126464]), '<|mmu|>': tensor([126089]), '<|t2v|>': tensor([126090]), '<|v2v|>': tensor([126091]), '<|lvg|>': tensor([126092]), '[iPAD]': tensor([126093]), '<|r2i|>': tensor([126094]), '<|t2g|>': tensor([126094]), '<|sot|>': tensor([126080]), '<|eot|>': tensor([126081]), '<|end_header_id|>': tensor([126347]), '<|eot_id|>': tensor([126348]), '<|start_header_id|>': tensor([126346])}
+Initializing MMadaModelLM with config: MMadaConfig {
+  "_attn_implementation_autoset": true,
+  "_name_or_path": "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07",
+  "activation_type": "silu",
+  "alibi": false,
+  "alibi_bias_max": 8.0,
+  "architectures": [
+    "LLaDAModelLM"
+  ],
+  "attention_dropout": 0.0,
+  "attention_layer_norm": false,
+  "attention_layer_norm_with_affine": true,
+  "auto_map": {
+    "AutoConfig": "configuration_llada.LLaDAConfig",
+    "AutoModel": "modeling_llada.LLaDAModelLM",
+    "AutoModelForCausalLM": "modeling_llada.LLaDAModelLM"
+  },
+  "bias_for_layer_norm": false,
+  "block_group_size": 1,
+  "block_type": "llama",
+  "codebook_size": 8192,
+  "d_model": 4096,
+  "embedding_dropout": 0.0,
+  "embedding_size": 126464,
+  "eos_token_id": 126081,
+  "flash_attention": false,
+  "include_bias": false,
+  "include_qkv_bias": false,
+  "init_cutoff_factor": null,
+  "init_device": "meta",
+  "init_fn": "mitchell",
+  "init_std": 0.02,
+  "input_emb_norm": false,
+  "layer_norm_type": "rms",
+  "layer_norm_with_affine": true,
+  "llm_vocab_size": 126464,
+  "mask_token_id": 126336,
+  "max_sequence_length": 4096,
+  "mlp_hidden_size": 12288,
+  "mlp_ratio": 4,
+  "model_type": "mmada",
+  "multi_query_attention": null,
+  "n_heads": 32,
+  "n_kv_heads": 32,
+  "n_layers": 32,
+  "new_vocab_size": 134656,
+  "num_new_special_tokens": 0,
+  "num_vq_tokens": 256,
+  "pad_token_id": 126081,
+  "precision": "amp_bf16",
+  "pretrained_model_path": "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07",
+  "residual_dropout": 0.0,
+  "rms_norm_eps": 1e-05,
+  "rope": true,
+  "rope_full_precision": true,
+  "rope_theta": 500000.0,
+  "scale_logits": false,
+  "tie_word_embeddings": false,
+  "transformers_version": "4.46.0",
+  "use_cache": false,
+  "vocab_size": 126464,
+  "w_clip_vit": false,
+  "weight_tying": false
+}
+
+
+Loading checkpoint shards:   0%|          | 0/6 [00:00<?, ?it/s]
+Loading checkpoint shards:   0%|          | 0/6 [00:00<?, ?it/s]
+Loading checkpoint shards:  17%|█▋        | 1/6 [00:00<00:01,  4.90it/s]
+Loading checkpoint shards:  17%|█▋        | 1/6 [00:00<00:01,  3.63it/s]
+Loading checkpoint shards:  33%|███▎      | 2/6 [00:00<00:00,  5.85it/s]
+Loading checkpoint shards:  33%|███▎      | 2/6 [00:00<00:00,  4.54it/s]
+Loading checkpoint shards:  50%|█████     | 3/6 [00:00<00:00,  6.05it/s]wandb: Currently logged in as: 1067992289 (1067992289zyh) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+
+Loading checkpoint shards:  50%|█████     | 3/6 [00:00<00:00,  4.87it/s]
+Loading checkpoint shards:  67%|██████▋   | 4/6 [00:00<00:00,  6.44it/s]
+Loading checkpoint shards:  83%|████████▎ | 5/6 [00:00<00:00,  6.56it/s]
+Loading checkpoint shards:  67%|██████▋   | 4/6 [00:00<00:00,  5.13it/s]
+Loading checkpoint shards: 100%|██████████| 6/6 [00:00<00:00,  6.52it/s]
+Loading checkpoint shards: 100%|██████████| 6/6 [00:00<00:00,  6.30it/s]
+
+Loading checkpoint shards:  83%|████████▎ | 5/6 [00:00<00:00,  5.46it/s]
+Loading checkpoint shards: 100%|██████████| 6/6 [00:01<00:00,  6.16it/s]
+Loading checkpoint shards: 100%|██████████| 6/6 [00:01<00:00,  5.41it/s]
+wandb: setting up run k6rrmiy0
+wandb: Tracking run with wandb version 0.25.0
+wandb: Run data is saved locally in /mnt/c20250607/user/wanghaoran/zyh/scMMaDA/wandb/run-20260410_053837-k6rrmiy0
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run scmmada-training-stage1-llada-instruct
+wandb: ⭐️ View project at https://wandb.ai/1067992289zyh/scmmada-training-stage1
+wandb: 🚀 View run at https://wandb.ai/1067992289zyh/scmmada-training-stage1/runs/k6rrmiy0
+04/10/2026 05:38:39 - INFO - root - Saving config to scmmada-training-stage1-llada-instruct/config.yaml
+04/10/2026 05:38:39 - INFO - __main__ - Loading models and optimizer
+self.sptids_dict: {'<|soi|>': tensor([126084]), '<|eoi|>': tensor([126085]), '<|sov|>': tensor([126086]), '<|eov|>': tensor([126087]), '<|t2i|>': tensor([126088]), '<|mmug|>': tensor([126464]), '<|mmu|>': tensor([126089]), '<|t2v|>': tensor([126090]), '<|v2v|>': tensor([126091]), '<|lvg|>': tensor([126092]), '[iPAD]': tensor([126093]), '<|r2i|>': tensor([126094]), '<|t2g|>': tensor([126094]), '<|sot|>': tensor([126080]), '<|eot|>': tensor([126081]), '<|end_header_id|>': tensor([126347]), '<|eot_id|>': tensor([126348]), '<|start_header_id|>': tensor([126346])}
+special tokens : 
+ {'<|soi|>': tensor([126084]), '<|eoi|>': tensor([126085]), '<|sov|>': tensor([126086]), '<|eov|>': tensor([126087]), '<|t2i|>': tensor([126088]), '<|mmug|>': tensor([126464]), '<|mmu|>': tensor([126089]), '<|t2v|>': tensor([126090]), '<|v2v|>': tensor([126091]), '<|lvg|>': tensor([126092]), '[iPAD]': tensor([126093]), '<|r2i|>': tensor([126094]), '<|t2g|>': tensor([126094]), '<|sot|>': tensor([126080]), '<|eot|>': tensor([126081]), '<|end_header_id|>': tensor([126347]), '<|eot_id|>': tensor([126348]), '<|start_header_id|>': tensor([126346])}
+Initializing MMadaModelLM with config: MMadaConfig {
+  "_attn_implementation_autoset": true,
+  "_name_or_path": "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07",
+  "activation_type": "silu",
+  "alibi": false,
+  "alibi_bias_max": 8.0,
+  "architectures": [
+    "LLaDAModelLM"
+  ],
+  "attention_dropout": 0.0,
+  "attention_layer_norm": false,
+  "attention_layer_norm_with_affine": true,
+  "auto_map": {
+    "AutoConfig": "configuration_llada.LLaDAConfig",
+    "AutoModel": "modeling_llada.LLaDAModelLM",
+    "AutoModelForCausalLM": "modeling_llada.LLaDAModelLM"
+  },
+  "bias_for_layer_norm": false,
+  "block_group_size": 1,
+  "block_type": "llama",
+  "codebook_size": 8192,
+  "d_model": 4096,
+  "embedding_dropout": 0.0,
+  "embedding_size": 126464,
+  "eos_token_id": 126081,
+  "flash_attention": false,
+  "include_bias": false,
+  "include_qkv_bias": false,
+  "init_cutoff_factor": null,
+  "init_device": "meta",
+  "init_fn": "mitchell",
+  "init_std": 0.02,
+  "input_emb_norm": false,
+  "layer_norm_type": "rms",
+  "layer_norm_with_affine": true,
+  "llm_vocab_size": 126464,
+  "mask_token_id": 126336,
+  "max_sequence_length": 4096,
+  "mlp_hidden_size": 12288,
+  "mlp_ratio": 4,
+  "model_type": "mmada",
+  "multi_query_attention": null,
+  "n_heads": 32,
+  "n_kv_heads": 32,
+  "n_layers": 32,
+  "new_vocab_size": 134656,
+  "num_new_special_tokens": 0,
+  "num_vq_tokens": 256,
+  "pad_token_id": 126081,
+  "precision": "amp_bf16",
+  "pretrained_model_path": "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07",
+  "residual_dropout": 0.0,
+  "rms_norm_eps": 1e-05,
+  "rope": true,
+  "rope_full_precision": true,
+  "rope_theta": 500000.0,
+  "scale_logits": false,
+  "tie_word_embeddings": false,
+  "transformers_version": "4.46.0",
+  "use_cache": false,
+  "vocab_size": 126464,
+  "w_clip_vit": false,
+  "weight_tying": false
+}
+
+
+Loading checkpoint shards:   0%|          | 0/6 [00:00<?, ?it/s]
+Loading checkpoint shards:  17%|█▋        | 1/6 [00:00<00:01,  3.61it/s]
+Loading checkpoint shards:  33%|███▎      | 2/6 [00:00<00:00,  5.40it/s]
+Loading checkpoint shards:  50%|█████     | 3/6 [00:00<00:00,  5.85it/s]
+Loading checkpoint shards:  67%|██████▋   | 4/6 [00:00<00:00,  6.58it/s]
+Loading checkpoint shards:  83%|████████▎ | 5/6 [00:00<00:00,  7.15it/s]
+Loading checkpoint shards: 100%|██████████| 6/6 [00:00<00:00,  7.52it/s]
+Loading checkpoint shards: 100%|██████████| 6/6 [00:00<00:00,  6.57it/s]
