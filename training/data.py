@@ -563,7 +563,7 @@ class CellwTextDataset:
         # Load scgpt gene vocabulary
         with open(gene_vocab_path, 'r') as f:
             gene_vocab = json.load(f)
-        self.gene_vocab = {gene: idx for idx, gene in gene_vocab.items()}
+        self.gene_vocab = {gene: int(idx) for gene, idx in gene_vocab.items()}
 
         # Load LMDB vocabulary for ID mapping
         if lmdb_vocab_path is not None and os.path.exists(lmdb_vocab_path):
@@ -809,77 +809,101 @@ class CellwTextDataset:
         import torch
         import msgpack
 
-        env_idx, local_idx = self._resolve_env_and_local_idx(idx)
-        env = self.envs[env_idx]
+        # No zero-padding path: if a sample has fewer than max_gene_tokens valid mapped genes,
+        # resample another index to keep fixed-length dense gene sequences.
+        max_resample_attempts = 8
+        cur_idx = int(idx)
+        last_reason = None
 
-        with env.begin() as txn:
-            key10 = f'{local_idx:010d}'.encode('ascii')
-            value = txn.get(key10)
-            if value is None:
-                key9 = f'{local_idx:09d}'.encode('ascii')
-                value = txn.get(key9)
-            if value is None:
-                raise IndexError(f"Index {idx} not found in LMDB (tried 10-digit and 9-digit keys)")
-            try:
-                data = msgpack.unpackb(value, raw=False)
-            except Exception:
+        for _ in range(max_resample_attempts):
+            env_idx, local_idx = self._resolve_env_and_local_idx(cur_idx)
+            env = self.envs[env_idx]
+
+            with env.begin() as txn:
+                key10 = f'{local_idx:010d}'.encode('ascii')
+                value = txn.get(key10)
+                if value is None:
+                    key9 = f'{local_idx:09d}'.encode('ascii')
+                    value = txn.get(key9)
+                if value is None:
+                    last_reason = f"Index {cur_idx} not found in LMDB"
+                    cur_idx = random.randint(0, self.length - 1)
+                    continue
                 try:
-                    data = json.loads(value.decode('utf-8'))
-                except Exception as e:
-                    raise ValueError(f"Failed to decode LMDB value at idx {idx}: {e}")
+                    data = msgpack.unpackb(value, raw=False)
+                except Exception:
+                    try:
+                        data = json.loads(value.decode('utf-8'))
+                    except Exception as e:
+                        last_reason = f"Failed to decode LMDB value at idx {cur_idx}: {e}"
+                        cur_idx = random.randint(0, self.length - 1)
+                        continue
 
-        gene_ids_lmdb = list(data.get('gene_ids', []))
-        log1p_x = list(data.get('log1p_x', []))
+            gene_ids_lmdb = list(data.get('gene_ids', []))
+            log1p_x = list(data.get('log1p_x', []))
 
-        if len(log1p_x) < len(gene_ids_lmdb):
-            log1p_x = log1p_x + [0.0] * (len(gene_ids_lmdb) - len(log1p_x))
+            if len(gene_ids_lmdb) == 0:
+                last_reason = f"Empty gene_ids at idx {cur_idx}"
+                cur_idx = random.randint(0, self.length - 1)
+                continue
 
-        # Keep the most informative genes under fixed token budget: top-k by log1p expression.
-        if len(gene_ids_lmdb) > self.max_gene_tokens:
-            topk_indices = sorted(
-                range(len(gene_ids_lmdb)),
-                key=lambda i: log1p_x[i],
-                reverse=True
-            )[:self.max_gene_tokens]
-            # Restore original order to avoid introducing an arbitrary sort in sequence positions.
-            topk_indices = sorted(topk_indices)
-            gene_ids_lmdb = [gene_ids_lmdb[i] for i in topk_indices]
-            log1p_x = [log1p_x[i] for i in topk_indices]
+            if len(log1p_x) < len(gene_ids_lmdb):
+                log1p_x = log1p_x + [0.0] * (len(gene_ids_lmdb) - len(log1p_x))
 
-        if self.lmdb_id2scgpt_id is not None:
-            gene_ids = [self.lmdb_id2scgpt_id[lmdb_id] for lmdb_id in gene_ids_lmdb if lmdb_id in self.lmdb_id2scgpt_id]
-        else:
-            gene_ids = list(gene_ids_lmdb)
+            pairs = list(zip(gene_ids_lmdb, log1p_x))
 
-        if len(gene_ids) > self.max_gene_tokens:
-            gene_ids = gene_ids[:self.max_gene_tokens]
-        if len(gene_ids) < self.max_gene_tokens:
-            gene_ids = gene_ids + [0] * (self.max_gene_tokens - len(gene_ids))
+            # Keep the most informative genes under fixed token budget: top-k by log1p expression.
+            # Keep descending-by-expression order directly.
+            if len(pairs) > self.max_gene_tokens:
+                topk_indices = sorted(
+                    range(len(pairs)),
+                    key=lambda i: pairs[i][1],
+                    reverse=True,
+                )[:self.max_gene_tokens]
+                pairs = [pairs[i] for i in topk_indices]
 
-        if len(log1p_x) > self.max_gene_tokens:
-            log1p_x = log1p_x[:self.max_gene_tokens]
-        if len(log1p_x) < self.max_gene_tokens:
-            log1p_x = log1p_x + [0.0] * (self.max_gene_tokens - len(log1p_x))
+            if self.lmdb_id2scgpt_id is not None:
+                mapped_pairs = [
+                    (self.lmdb_id2scgpt_id[lmdb_id], expr)
+                    for lmdb_id, expr in pairs
+                    if lmdb_id in self.lmdb_id2scgpt_id
+                ]
+            else:
+                mapped_pairs = pairs
 
-        metadata_row = self._get_metadata_row(idx)
-        celltype_label_raw = self._get_celltype_label(idx)
-        caption_text = self._build_caption_from_record(data, metadata_row, celltype_label_raw)
+            if len(mapped_pairs) < self.max_gene_tokens:
+                last_reason = (
+                    f"Insufficient mapped genes at idx {cur_idx}: "
+                    f"raw={len(gene_ids_lmdb)}, mapped={len(mapped_pairs)}, need={self.max_gene_tokens}"
+                )
+                cur_idx = random.randint(0, self.length - 1)
+                continue
 
-        # Keep numeric tensor label for compatibility with existing code.
-        if isinstance(celltype_label_raw, (int, float)):
-            celltype_label_tensor = torch.tensor(int(celltype_label_raw), dtype=torch.long)
-        else:
-            celltype_label_tensor = torch.tensor(-1, dtype=torch.long)
+            mapped_pairs = mapped_pairs[:self.max_gene_tokens]
+            gene_ids = [int(gid) for gid, _ in mapped_pairs]
+            gene_expr = [float(expr) for _, expr in mapped_pairs]
 
-        cell_feature = self._get_cell_feature(env_idx, local_idx)
+            metadata_row = self._get_metadata_row(cur_idx)
+            celltype_label_raw = self._get_celltype_label(cur_idx)
+            caption_text = self._build_caption_from_record(data, metadata_row, celltype_label_raw)
 
-        return {
-            'gene_ids': torch.tensor(gene_ids, dtype=torch.long),
-            'gene_expression': torch.tensor(log1p_x, dtype=torch.float32),
-            'celltype_label': celltype_label_tensor,
-            'texts': caption_text,
-            'cell_features': cell_feature,
-        }
+            # Keep numeric tensor label for compatibility with existing code.
+            if isinstance(celltype_label_raw, (int, float)):
+                celltype_label_tensor = torch.tensor(int(celltype_label_raw), dtype=torch.long)
+            else:
+                celltype_label_tensor = torch.tensor(-1, dtype=torch.long)
+
+            cell_feature = self._get_cell_feature(env_idx, local_idx)
+
+            return {
+                'gene_ids': torch.tensor(gene_ids, dtype=torch.long),
+                'gene_expression': torch.tensor(gene_expr, dtype=torch.float32),
+                'celltype_label': celltype_label_tensor,
+                'texts': caption_text,
+                'cell_features': cell_feature,
+            }
+
+        raise RuntimeError(f"Failed to fetch valid non-padded sample after {max_resample_attempts} attempts: {last_reason}")
 
     def collate_fn(self, batch):
         import torch

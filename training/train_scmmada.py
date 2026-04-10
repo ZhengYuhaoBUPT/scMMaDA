@@ -102,11 +102,12 @@ def main():
             else config.training.batch_size_t2i
         )
     )
+    batch_size_t2g_cfg = int(config.training.get("batch_size_t2g", batch_size_mmug_cfg))
 
     if mmug_only:
-        total_batch_size_per_gpu = batch_size_mmug_cfg
+        total_batch_size_per_gpu = max(batch_size_mmug_cfg, batch_size_t2g_cfg)
         total_batch_size = (
-            batch_size_mmug_cfg * accelerator.num_processes * config.training.gradient_accumulation_steps
+            total_batch_size_per_gpu * accelerator.num_processes * config.training.gradient_accumulation_steps
         )
     else:
         total_batch_size_per_gpu = (config.training.batch_size_t2i
@@ -408,6 +409,8 @@ def main():
             raise NotImplementedError(f"Unsupported dataset type {config.dataset.und_type}")
 
     # CellwText gene-to-text dataset
+    train_dataloader_t2g = None
+    num_update_steps_per_epoch_t2g = None
     if hasattr(dataset_config, 'train_g2t_lmdb_path') and dataset_config.train_g2t_lmdb_path is not None:
         dataset_mmug = CellwTextDataset(
             lmdb_paths=dataset_config.train_g2t_lmdb_path,
@@ -431,6 +434,30 @@ def main():
             train_dataloader_mmug.batch_size * accelerator.num_processes * config.training.gradient_accumulation_steps
         )
         num_update_steps_per_epoch_mmug = math.ceil(len(dataset_mmug) / total_batch_size_mmug)
+
+        if float(config.training.get("t2g_coeff", 0.0)) > 0.0:
+            dataset_t2g = CellwTextDataset(
+                lmdb_paths=dataset_config.train_g2t_lmdb_path,
+                gene_vocab_path=dataset_config.get('gene_vocab_path', ''),
+                celltype_label_path=dataset_config.get('celltype_label_path', None),
+                tokenizer=tokenizer,
+                max_seq_length=preproc_config.max_seq_length,
+                max_gene_tokens=dataset_config.get('max_gene_tokens', 2000),
+                num_expression_bins=dataset_config.get('num_expression_bins', 51),
+                lmdb_vocab_path=dataset_config.get('lmdb_vocab_path', None),
+                cell_metadata_path=dataset_config.get('cell_metadata_path', None),
+                cell_feature_root=dataset_config.get('cell_feature_root', None),
+                caption_template=dataset_config.get('caption_template', None),
+                batch_size=batch_size_t2g_cfg,
+                num_workers=dataset_config.num_workers,
+                shuffle=True,
+                pin_memory=dataset_config.pin_memory,
+            )
+            train_dataloader_t2g = dataset_t2g.get_dataloader()
+            total_batch_size_t2g = (
+                train_dataloader_t2g.batch_size * accelerator.num_processes * config.training.gradient_accumulation_steps
+            )
+            num_update_steps_per_epoch_t2g = math.ceil(len(dataset_t2g) / total_batch_size_t2g)
     else:
         train_dataloader_mmug = None
         num_update_steps_per_epoch_mmug = None
@@ -453,7 +480,16 @@ def main():
         if num_update_steps_per_epoch_mmug is None:
             raise ValueError("mmug_only=True but num_update_steps_per_epoch_mmug is None.")
         iterables = {"mmug_flow": train_dataloader_mmug}
-        num_update_steps_per_epoch = num_update_steps_per_epoch_mmug
+        step_candidates = [num_update_steps_per_epoch_mmug]
+        if train_dataloader_t2g is not None:
+            iterables["t2g_flow"] = train_dataloader_t2g
+            step_candidates.append(num_update_steps_per_epoch_t2g)
+        if config.dataset.combined_loader_mode == "max_size_cycle":
+            num_update_steps_per_epoch = max(step_candidates)
+        elif config.dataset.combined_loader_mode == "min_size":
+            num_update_steps_per_epoch = min(step_candidates)
+        else:
+            num_update_steps_per_epoch = step_candidates[0]
         num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
     else:
         iterables = {
@@ -463,6 +499,8 @@ def main():
         }
         if train_dataloader_mmug is not None:
             iterables["mmug_flow"] = train_dataloader_mmug  # multi-modal understanding for gene data
+        if train_dataloader_t2g is not None:
+            iterables["t2g_flow"] = train_dataloader_t2g
 
     combined_dataloader = CombinedLoader(iterables, mode=config.dataset.combined_loader_mode)
 
@@ -674,6 +712,7 @@ def main():
             # for loss calculation
             batch_size_t2i = batch["t2i_flow"]["images"].shape[0] if "t2i_flow" in batch else 0
             batch_size_mmug = batch["mmug_flow"]["gene_ids"].shape[0] if "mmug_flow" in batch else 0
+            batch_size_t2g = batch["t2g_flow"]["gene_ids"].shape[0] if "t2g_flow" in batch else 0
             batch_size_lm = len(batch["lm_flow"]["input_ids"]) if "lm_flow" in batch else 0
             batch_size_mmu = batch["mmu_flow"]["images"].shape[0] if "mmu_flow" in batch else 0
 
@@ -704,13 +743,15 @@ def main():
                 labels_t2g = None
                 p_mask_t2g = None
                 answer_lengths_t2g = None
-                if text_to_gene_coeff > 0.0:
+                if text_to_gene_coeff > 0.0 and "t2g_flow" in batch:
+                    gene_ids_t2g = batch["t2g_flow"]["gene_ids"].to(accelerator.device, non_blocking=True)
+                    texts_t2g = batch["t2g_flow"].get("texts", [""] * gene_ids_t2g.shape[0])
                     (
                         input_ids_t2g,
                         labels_t2g,
                         p_mask_t2g,
                         answer_lengths_t2g,
-                    ) = prepare_inputs_and_labels_for_t2g(gene_ids, texts_mmug)
+                    ) = prepare_inputs_and_labels_for_t2g(gene_ids_t2g, texts_t2g)
                     input_ids_t2g = input_ids_t2g.to(accelerator.device, non_blocking=True)
                     labels_t2g = labels_t2g.to(accelerator.device, non_blocking=True)
 
@@ -840,7 +881,7 @@ def main():
                         t2g_valid_masked_tokens = torch.zeros((), device=loss_mmug.device, dtype=torch.long)
 
                     avg_loss_mmug = accelerator.gather(loss_mmug.repeat(batch_size_mmug_cfg)).mean()
-                    avg_loss_t2g = accelerator.gather(loss_t2g.repeat(batch_size_mmug_cfg)).mean()
+                    avg_loss_t2g = accelerator.gather(loss_t2g.repeat(max(batch_size_t2g_cfg, 1))).mean()
                     avg_t2g_masked_tokens = accelerator.gather(t2g_masked_tokens.reshape(1)).float().mean()
                     avg_t2g_valid_masked_tokens = accelerator.gather(t2g_valid_masked_tokens.reshape(1)).float().mean()
                     loss = (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff) * loss_mmug + \
@@ -878,6 +919,7 @@ def main():
                             "t2g_masked_tokens": avg_t2g_masked_tokens.item(),
                             "t2g_valid_masked_tokens": avg_t2g_valid_masked_tokens.item(),
                             "mmug_batch_size": int(batch_size_mmug),
+                            "t2g_batch_size": int(batch_size_t2g),
                             "mmug_active": int(batch_size_mmug > 0),
                             "lr": lr_scheduler.get_last_lr()[0],
                             "samples/sec/gpu": samples_per_second_per_gpu,
@@ -893,6 +935,7 @@ def main():
                             f"T2G_Masked: {avg_t2g_masked_tokens.item():0.1f} "
                             f"T2G_Valid: {avg_t2g_valid_masked_tokens.item():0.1f} "
                             f"MMUG_BS: {batch_size_mmug} "
+                            f"T2G_BS: {batch_size_t2g} "
                             f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "
                             f"Batch (t): {batch_time_m.val:0.4f} "
                             f"LR: {lr_scheduler.get_last_lr()[0]:0.6f}"
@@ -968,15 +1011,18 @@ def main():
                 ) = prepare_inputs_and_labels_for_mmu(input_ids_mmug, prompt_masks_mmug, labels_mmug)
                 input_ids_mmug = input_ids_mmug.to(accelerator.device, non_blocking=True)
                 labels_mmug = labels_mmug.to(accelerator.device, non_blocking=True)
-                if float(config.training.get("t2g_coeff", 0.0)) > 0.0:
-                    (
-                        input_ids_t2g,
-                        labels_t2g,
-                        p_mask_t2g,
-                        answer_lengths_t2g,
-                    ) = prepare_inputs_and_labels_for_t2g(gene_ids, texts_mmug)
-                    input_ids_t2g = input_ids_t2g.to(accelerator.device, non_blocking=True)
-                    labels_t2g = labels_t2g.to(accelerator.device, non_blocking=True)
+
+            if float(config.training.get("t2g_coeff", 0.0)) > 0.0 and "t2g_flow" in batch:
+                gene_ids_t2g = batch["t2g_flow"]["gene_ids"].to(accelerator.device, non_blocking=True)
+                texts_t2g = batch["t2g_flow"].get("texts", [""] * gene_ids_t2g.shape[0])
+                (
+                    input_ids_t2g,
+                    labels_t2g,
+                    p_mask_t2g,
+                    answer_lengths_t2g,
+                ) = prepare_inputs_and_labels_for_t2g(gene_ids_t2g, texts_t2g)
+                input_ids_t2g = input_ids_t2g.to(accelerator.device, non_blocking=True)
+                labels_t2g = labels_t2g.to(accelerator.device, non_blocking=True)
 
             # *-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*-------*
             # Build formatted sequences for captioning/multimodal understanding
@@ -1116,7 +1162,7 @@ def main():
                         )
                     )
                     avg_loss_mmug = accelerator.gather(loss_mmug.repeat(mmug_bs_for_log)).mean()
-                    avg_loss_t2g = accelerator.gather(loss_t2g.repeat(mmug_bs_for_log)).mean()
+                    avg_loss_t2g = accelerator.gather(loss_t2g.repeat(max(batch_size_t2g_cfg, 1))).mean()
                 else:
                     avg_loss_mmug = torch.tensor(0.0, device=loss_t2i.device)
                     avg_loss_t2g = torch.tensor(0.0, device=loss_t2i.device)
@@ -1168,6 +1214,7 @@ def main():
                         "t2g_masked_tokens": avg_t2g_masked_tokens.item(),
                         "t2g_valid_masked_tokens": avg_t2g_valid_masked_tokens.item(),
                         "mmug_batch_size": int(batch_size_mmug),
+                        "t2g_batch_size": int(batch_size_t2g),
                         "mmug_active": int(batch_size_mmug > 0),
                         "step_loss_mmu": avg_loss_mmu.item(),
                         "step_loss_lm": avg_loss_lm.item(),
@@ -1187,6 +1234,7 @@ def main():
                         f"T2G_Masked: {avg_t2g_masked_tokens.item():0.1f} "
                         f"T2G_Valid: {avg_t2g_valid_masked_tokens.item():0.1f} "
                         f"MMUG_BS: {batch_size_mmug} "
+                        f"T2G_BS: {batch_size_t2g} "
                         f"Loss_mmu: {avg_loss_mmu.item():0.4f} "
                         f"Loss_lm: {avg_loss_lm.item():0.4f} "
                         f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "
