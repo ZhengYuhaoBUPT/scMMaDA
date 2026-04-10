@@ -7,6 +7,8 @@ mmada-training-*/
 *.safetensors
 scmmada-training*
 old*
+train*
+final*
 
 .sand*
 .claude*
