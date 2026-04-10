@@ -884,9 +884,11 @@ def main():
                     avg_loss_t2g = accelerator.gather(loss_t2g.repeat(max(batch_size_t2g_cfg, 1))).mean()
                     avg_t2g_masked_tokens = accelerator.gather(t2g_masked_tokens.reshape(1)).float().mean()
                     avg_t2g_valid_masked_tokens = accelerator.gather(t2g_valid_masked_tokens.reshape(1)).float().mean()
-                    loss = (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff) * loss_mmug + \
-                           text_to_gene_coeff * loss_t2g
-                    loss = loss.mean()
+                    mmug_coeff = (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff)
+                    loss_gene = mmug_coeff * loss_mmug + text_to_gene_coeff * loss_t2g
+                    loss = loss_gene.mean()
+                    avg_loss_gene = accelerator.gather(loss_gene.detach().reshape(1)).mean()
+                    avg_loss_total = accelerator.gather(loss.detach().reshape(1)).mean()
 
                     accelerator.backward(loss)
 
@@ -916,6 +918,8 @@ def main():
                         logs = {
                             "step_loss_mmug": avg_loss_mmug.item(),
                             "step_loss_t2g": avg_loss_t2g.item(),
+                            "step_loss_gene": avg_loss_gene.item(),
+                            "step_loss_total": avg_loss_total.item(),
                             "t2g_masked_tokens": avg_t2g_masked_tokens.item(),
                             "t2g_valid_masked_tokens": avg_t2g_valid_masked_tokens.item(),
                             "mmug_batch_size": int(batch_size_mmug),
@@ -932,6 +936,8 @@ def main():
                             f"Step: {global_step + 1} "
                             f"Loss_mmug: {avg_loss_mmug.item():0.4f} "
                             f"Loss_t2g: {avg_loss_t2g.item():0.4f} "
+                            f"Loss_gene: {avg_loss_gene.item():0.4f} "
+                            f"Loss_total: {avg_loss_total.item():0.4f} "
                             f"T2G_Masked: {avg_t2g_masked_tokens.item():0.1f} "
                             f"T2G_Valid: {avg_t2g_valid_masked_tokens.item():0.1f} "
                             f"MMUG_BS: {batch_size_mmug} "
@@ -1170,12 +1176,16 @@ def main():
                 avg_t2g_valid_masked_tokens = accelerator.gather(t2g_valid_masked_tokens.reshape(1)).float().mean()
                 avg_loss_lm = accelerator.gather(loss_lm.repeat(config.training.batch_size_lm)).mean()
                 avg_loss_mmu = accelerator.gather(loss_mmu.repeat(config.training.batch_size_mmu)).mean()
+                mmug_coeff = (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff)
+                t2g_coeff = float(config.training.get("t2g_coeff", 0.0))
+                loss_gene = mmug_coeff * loss_mmug + t2g_coeff * loss_t2g
                 loss = config.training.t2i_coeff * loss_t2i + \
-                       (config.training.mmug_coeff if hasattr(config.training, "mmug_coeff") else config.training.g2t_coeff) * loss_mmug + \
-                       float(config.training.get("t2g_coeff", 0.0)) * loss_t2g + \
+                       loss_gene + \
                        config.training.lm_coeff * loss_lm + \
                        config.training.mmu_coeff * loss_mmu
 
+                avg_loss_gene = accelerator.gather(loss_gene.detach().reshape(1)).mean()
+                avg_loss_total = accelerator.gather(loss.detach().reshape(1)).mean()
                 avg_masking_rate = accelerator.gather(mask_prob.repeat(config.training.batch_size_t2i)).mean()
 
                 accelerator.backward(loss)
@@ -1211,6 +1221,8 @@ def main():
                         "step_loss_t2i": avg_loss_t2i.item(),
                         "step_loss_mmug": avg_loss_mmug.item(),
                         "step_loss_t2g": avg_loss_t2g.item(),
+                        "step_loss_gene": avg_loss_gene.item(),
+                        "step_loss_total": avg_loss_total.item(),
                         "t2g_masked_tokens": avg_t2g_masked_tokens.item(),
                         "t2g_valid_masked_tokens": avg_t2g_valid_masked_tokens.item(),
                         "mmug_batch_size": int(batch_size_mmug),
@@ -1231,6 +1243,8 @@ def main():
                         f"Loss_t2i: {avg_loss_t2i.item():0.4f} "
                         f"Loss_mmug: {avg_loss_mmug.item():0.4f} "
                         f"Loss_t2g: {avg_loss_t2g.item():0.4f} "
+                        f"Loss_gene: {avg_loss_gene.item():0.4f} "
+                        f"Loss_total: {avg_loss_total.item():0.4f} "
                         f"T2G_Masked: {avg_t2g_masked_tokens.item():0.1f} "
                         f"T2G_Valid: {avg_t2g_valid_masked_tokens.item():0.1f} "
                         f"MMUG_BS: {batch_size_mmug} "
