@@ -37,13 +37,13 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedType, set_seed
 
-from training.data import Text2ImageDataset, CellwTextDataset
+from training.data import Text2ImageDataset, CellwTextDataset, load_gene_vocab
 from training.utils import get_config, flatten_omega_conf, image_transform
 from training.imagenet_dataset import ImageNetDataset
 from parquet import RefinedWebDataset
 
 from models import MAGVITv2, get_mask_schedule, MMadaModelLM, MMadaConfig
-from training.prompting_utils import UniversalPrompting
+from training.prompting_utils import UniversalPrompting, reserved_token_mapping
 from models.lr_schedulers import get_scheduler
 from models.logging import set_verbosity_info, set_verbosity_error
 
@@ -211,6 +211,30 @@ def main():
     mmada_config_dict = {k: v for k, v in config.model.mmada.items()}
     merged_config = {**base_config, **mmada_config_dict}
     mmada_config = MMadaConfig(**merged_config)
+
+    # Expand total vocabulary to include a dedicated gene token range.
+    # We always place gene tokens strictly after all existing tokenizer/special-token ids.
+    base_vocab_size = max(
+        int(getattr(mmada_config, "new_vocab_size", 0)),
+        int(getattr(mmada_config, "vocab_size", 0)),
+        len(tokenizer),
+        max(reserved_token_mapping.values()) + 1,
+    )
+    gene_token_offset = int(base_vocab_size)
+    gene_vocab_size = 0
+    gene_vocab_num_embeddings = 0
+    gene_vocab_max_id = None
+    gene_vocab_path = config.dataset.params.get("gene_vocab_path", None)
+    if gene_vocab_path is not None and os.path.exists(gene_vocab_path):
+        _, gene_vocab_size, gene_vocab_num_embeddings, gene_vocab_max_id = load_gene_vocab(gene_vocab_path)
+    total_vocab_size = gene_token_offset + gene_vocab_num_embeddings
+    logger.info(
+        f"Vocab expansion: base_vocab={gene_token_offset}, gene_vocab_size={gene_vocab_size}, "
+        f"gene_vocab_num_embeddings={gene_vocab_num_embeddings}, total_vocab={total_vocab_size}, "
+        f"gene_token_offset={gene_token_offset}, gene_vocab_max_id={gene_vocab_max_id}"
+    )
+    mmada_config.new_vocab_size = int(total_vocab_size)
+
     model = MMadaModelLM.from_pretrained(config.model.mmada.pretrained_model_path, torch_dtype=torch.bfloat16, config=mmada_config)
     model.resize_token_embeddings(mmada_config.new_vocab_size)
     model.config.embedding_size = model.config.vocab_size
@@ -422,6 +446,7 @@ def main():
             max_gene_tokens=dataset_config.get('max_gene_tokens', 2000),
             num_expression_bins=dataset_config.get('num_expression_bins', 51),
             lmdb_vocab_path=dataset_config.get('lmdb_vocab_path', None),
+            gene_token_offset=gene_token_offset,
             cell_metadata_path=dataset_config.get('cell_metadata_path', None),
             cell_feature_root=dataset_config.get('cell_feature_root', None),
             caption_template=dataset_config.get('caption_template', None),
@@ -446,6 +471,7 @@ def main():
                 max_gene_tokens=dataset_config.get('max_gene_tokens', 2000),
                 num_expression_bins=dataset_config.get('num_expression_bins', 51),
                 lmdb_vocab_path=dataset_config.get('lmdb_vocab_path', None),
+                gene_token_offset=gene_token_offset,
                 cell_metadata_path=dataset_config.get('cell_metadata_path', None),
                 cell_feature_root=dataset_config.get('cell_feature_root', None),
                 caption_template=dataset_config.get('caption_template', None),
@@ -534,7 +560,27 @@ def main():
             resume_step_in_epoch = global_step % num_update_steps_per_epoch
 
             full_state_dir = os.path.join(path, "training_state")
-            if os.path.isdir(full_state_dir):
+            current_vocab_size = model.get_input_embeddings().weight.shape[0]
+            checkpoint_vocab_size = None
+            restore_vocab_size_after_load = None
+            checkpoint_cfg_path = os.path.join(path, "unwrapped_model", "config.json")
+            if os.path.exists(checkpoint_cfg_path):
+                try:
+                    with open(checkpoint_cfg_path, "r") as f:
+                        checkpoint_vocab_size = int(json.load(f).get("vocab_size", current_vocab_size))
+                except Exception:
+                    checkpoint_vocab_size = None
+
+            if checkpoint_vocab_size is not None and checkpoint_vocab_size != current_vocab_size:
+                logger.warning(
+                    f"Checkpoint vocab ({checkpoint_vocab_size}) != current vocab ({current_vocab_size}). "
+                    f"Will load at checkpoint size, then re-expand to current size."
+                )
+                restore_vocab_size_after_load = current_vocab_size
+                model.resize_token_embeddings(checkpoint_vocab_size)
+                model.config.embedding_size = model.config.vocab_size
+
+            if os.path.isdir(full_state_dir) and (checkpoint_vocab_size is None or checkpoint_vocab_size == current_vocab_size):
                 resume_with_full_state = True
                 logger.info(f"Found full training state at {full_state_dir}; will restore after accelerator.prepare")
             elif os.path.exists(f'{path}/unwrapped_model/pytorch_model.bin'):
@@ -546,6 +592,9 @@ def main():
                         f"Missing keys: {list(load_result.missing_keys)[:20]}"
                     )
                 del state_dict
+                if restore_vocab_size_after_load is not None:
+                    model.resize_token_embeddings(restore_vocab_size_after_load)
+                    model.config.embedding_size = model.config.vocab_size
             elif os.path.exists(f'{path}/unwrapped_model/pytorch_model.bin.index.json'):
                 from safetensors.torch import load_file
                 from transformers.modeling_utils import load_sharded_checkpoint
@@ -554,6 +603,9 @@ def main():
                     logger.warning(
                         "Loaded sharded checkpoint with strict=False to allow newly added conditioning modules."
                     )
+                if restore_vocab_size_after_load is not None:
+                    model.resize_token_embeddings(restore_vocab_size_after_load)
+                    model.config.embedding_size = model.config.vocab_size
             # if safetensors sharded checkpoint exists
             elif os.path.exists(f'{path}/unwrapped_model/model.safetensors.index.json'):
                 from transformers.modeling_utils import load_sharded_checkpoint
@@ -568,6 +620,9 @@ def main():
                     logger.warning(
                         "Loaded safetensors sharded checkpoint with strict=False to allow newly added conditioning modules."
                     )
+                if restore_vocab_size_after_load is not None:
+                    model.resize_token_embeddings(restore_vocab_size_after_load)
+                    model.config.embedding_size = model.config.vocab_size
             else:
                 raise FileNotFoundError(f"Checkpoint {path}/unwrapped_model/pytorch_model.bin not found")
     else:

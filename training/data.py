@@ -42,6 +42,34 @@ from webdataset.tariterators import (
 
 person_token = ["a person", "someone", "somebody"]
 
+
+def load_gene_vocab(gene_vocab_path):
+    if gene_vocab_path is None or not os.path.exists(gene_vocab_path):
+        raise FileNotFoundError(f"Gene vocab file not found: {gene_vocab_path}")
+
+    with open(gene_vocab_path, "r") as f:
+        raw_gene_vocab = json.load(f)
+
+    if not isinstance(raw_gene_vocab, dict):
+        raise ValueError(f"Gene vocab must be a JSON object mapping gene name -> id, got {type(raw_gene_vocab)}")
+
+    gene_vocab = {str(gene): int(idx) for gene, idx in raw_gene_vocab.items()}
+    gene_vocab_size = len(gene_vocab)
+    if gene_vocab_size == 0:
+        return gene_vocab, 0, 0, None
+
+    gene_vocab_ids = list(gene_vocab.values())
+    if any(idx < 0 for idx in gene_vocab_ids):
+        raise ValueError("Gene vocab contains negative token ids, which are not supported.")
+
+    unique_gene_vocab_ids = set(gene_vocab_ids)
+    if len(unique_gene_vocab_ids) != gene_vocab_size:
+        raise ValueError("Gene vocab contains duplicate token ids; each gene must map to a unique id.")
+
+    gene_vocab_max_id = max(unique_gene_vocab_ids)
+    gene_vocab_num_embeddings = gene_vocab_max_id + 1
+    return gene_vocab, gene_vocab_size, gene_vocab_num_embeddings, gene_vocab_max_id
+
 def replace_person_token(t):
     "Used for CC12M - handles all case variations of <person> tag"
     t = re.sub(r"<person>([,\s]*(and)*[,\s]*<person>)+", " people ", t, flags=re.IGNORECASE)
@@ -520,6 +548,7 @@ class CellwTextDataset:
             max_gene_tokens: int = 2000,
             num_expression_bins: int = 51,
             lmdb_vocab_path: Optional[str] = None,
+            gene_token_offset: int = 0,
             cell_metadata_path: Optional[str] = None,
             cell_feature_root: Optional[str] = None,
             caption_template: Optional[str] = None,
@@ -549,6 +578,7 @@ class CellwTextDataset:
         self.pin_memory = pin_memory
         self.caption_template = caption_template
         self.cell_feature_root = cell_feature_root
+        self.gene_token_offset = int(gene_token_offset)
         self.h5ad_paths = {}
         self.h5ad_handles = {}
         self.h5ad_validated = set()
@@ -560,10 +590,14 @@ class CellwTextDataset:
                 if p.endswith('.h5ad')
             }
 
-        # Load scgpt gene vocabulary
-        with open(gene_vocab_path, 'r') as f:
-            gene_vocab = json.load(f)
-        self.gene_vocab = {gene: int(idx) for gene, idx in gene_vocab.items()}
+        # Load scGPT gene vocabulary with shared validation so dataset ids
+        # match the training-time embedding expansion logic.
+        (
+            self.gene_vocab,
+            self.gene_vocab_size,
+            self.gene_vocab_num_embeddings,
+            self.gene_vocab_max_id,
+        ) = load_gene_vocab(gene_vocab_path)
 
         # Load LMDB vocabulary for ID mapping
         if lmdb_vocab_path is not None and os.path.exists(lmdb_vocab_path):
@@ -862,7 +896,7 @@ class CellwTextDataset:
             reverse=True,
         )[:self.max_gene_tokens]
         mapped_pairs = [mapped_pairs_all[i] for i in topk_indices]
-        gene_ids = [int(gid) for gid, _ in mapped_pairs]
+        gene_ids = [int(gid) + self.gene_token_offset for gid, _ in mapped_pairs]
         gene_expr = [float(expr) for _, expr in mapped_pairs]
 
         metadata_row = self._get_metadata_row(cur_idx)
