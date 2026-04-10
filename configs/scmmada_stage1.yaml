@@ -32,7 +32,7 @@ model:
         pretrained_model_path: "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07"
         # "GSAI-ML/LLaDA-8B-Instruct"
         w_clip_vit: False
-        new_vocab_size: 134656
+        new_vocab_size: 187162  # 126465 text/reserved ids + 60697 gene vocab ids
         llm_vocab_size: 126464
         codebook_size: 8192
         num_vq_tokens: 256

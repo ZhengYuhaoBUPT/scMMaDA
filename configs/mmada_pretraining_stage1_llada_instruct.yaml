@@ -30,7 +30,7 @@ model:
     mmada:
         pretrained_model_path: "GSAI-ML/LLaDA-8B-Instruct"
         w_clip_vit: False
-        new_vocab_size: 126465
+        new_vocab_size: 187162  # 126465 text/reserved ids + 60697 gene vocab ids
         llm_vocab_size: 126464
         num_new_special_tokens: 0
         tie_word_embeddings: False

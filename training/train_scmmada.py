@@ -212,12 +212,14 @@ def main():
     merged_config = {**base_config, **mmada_config_dict}
     mmada_config = MMadaConfig(**merged_config)
 
-    # Expand total vocabulary to include a dedicated gene token range.
-    # We always place gene tokens strictly after all existing tokenizer/special-token ids.
-    base_vocab_size = max(
-        int(getattr(mmada_config, "new_vocab_size", 0)),
-        int(getattr(mmada_config, "vocab_size", 0)),
+    # Expand total vocabulary with a dedicated gene token range.
+    # Gene ids should start after the text tokenizer space, not after the image codebook range.
+    text_vocab_size = max(
+        int(getattr(mmada_config, "llm_vocab_size", 0)),
         len(tokenizer),
+    )
+    base_vocab_size = max(
+        text_vocab_size,
         max(reserved_token_mapping.values()) + 1,
     )
     gene_token_offset = int(base_vocab_size)
@@ -229,9 +231,10 @@ def main():
         _, gene_vocab_size, gene_vocab_num_embeddings, gene_vocab_max_id = load_gene_vocab(gene_vocab_path)
     total_vocab_size = gene_token_offset + gene_vocab_num_embeddings
     logger.info(
-        f"Vocab expansion: base_vocab={gene_token_offset}, gene_vocab_size={gene_vocab_size}, "
-        f"gene_vocab_num_embeddings={gene_vocab_num_embeddings}, total_vocab={total_vocab_size}, "
-        f"gene_token_offset={gene_token_offset}, gene_vocab_max_id={gene_vocab_max_id}"
+        f"Vocab expansion: text_vocab_size={text_vocab_size}, base_vocab={gene_token_offset}, "
+        f"gene_vocab_size={gene_vocab_size}, gene_vocab_num_embeddings={gene_vocab_num_embeddings}, "
+        f"total_vocab={total_vocab_size}, gene_token_offset={gene_token_offset}, "
+        f"gene_vocab_max_id={gene_vocab_max_id}"
     )
     mmada_config.new_vocab_size = int(total_vocab_size)
 
