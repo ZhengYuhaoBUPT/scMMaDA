@@ -300,11 +300,15 @@ def main():
     else:
         mask_schedule = get_mask_schedule(config.training.get("mask_schedule", "cosine"))
 
+    # 手动计算真实的微步寿命： 800 * 4 = 3200 
+    actual_scheduler_steps = config.training.max_train_steps * config.training.gradient_accumulation_steps 
+    # # 如果有 warmup，也要同步放大，防止刚起步就结束了 
+    actual_warmup_steps = config.lr_scheduler.params.warmup_steps * config.training.gradient_accumulation_steps
     lr_scheduler = get_scheduler(
         config.lr_scheduler.scheduler,
         optimizer=optimizer,
-        num_training_steps=config.training.max_train_steps,
-        num_warmup_steps=config.lr_scheduler.params.warmup_steps,
+        num_training_steps=actual_scheduler_steps # config.training.max_train_steps,
+        num_warmup_steps=actual_warmup_steps # config.lr_scheduler.params.warmup_steps,
         min_lr_scale=config.lr_scheduler.params.min_lr_scale
     )
 
@@ -1009,8 +1013,7 @@ def main():
                         accelerator.clip_grad_norm_(model.parameters(), config.training.max_grad_norm)
 
                     optimizer.step()
-                    if accelerator.sync_gradients:
-                        lr_scheduler.step()
+                    lr_scheduler.step()
 
                     if (
                             accelerator.sync_gradients
@@ -1308,8 +1311,7 @@ def main():
                     accelerator.clip_grad_norm_(model.parameters(), config.training.max_grad_norm)
 
                 optimizer.step()
-                if accelerator.sync_gradients:
-                    lr_scheduler.step()
+                lr_scheduler.step()
 
                 # log gradient norm before zeroing it
                 if (
