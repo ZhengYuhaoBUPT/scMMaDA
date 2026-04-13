@@ -1,0 +1,45 @@
+Actual training sample after conversation-format fix
+Date: 2026-04-13 UTC
+
+sample_id: SRX079943
+gene_ids_len: 0
+cell_features_shape: (768,)
+cell_features_head10: [-0.1485595703125, 0.51220703125, 0.83251953125, -0.229736328125, 1.302734375, -0.68359375, 0.271240234375, 0.2471923828125, -0.9140625, 1.2490234375]
+
+formatted_text:
+<|start_header_id|>user<|end_header_id|>
+
+Describe these cells concisely.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Adipose tissue sample with single-end reads, 50 base pairs in length.<|eot_id|>
+
+seq_len: 131
+prompt_token_count: 20
+target_token_count: 111
+label_token_count: 128
+
+input_ids_head40:
+[126464, 126084, 126085, 126080, 126346, 3840, 126347, 198, 198, 46426, 1261, 4643, 3934, 16288, 13, 126348, 126346, 598, 10450, 126347, 198, 198, 4122, 648, 1005, 13032, 6657, 391, 3554, 15882, 18618, 11, 220, 20, 15, 4074, 15666, 296, 4593, 13]
+
+prompt_mask_head40:
+[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+labels_head40:
+[-100, -100, -100, 126080, 126346, 3840, 126347, 198, 198, 46426, 1261, 4643, 3934, 16288, 13, 126348, 126346, 598, 10450, 126347, 198, 198, 4122, 648, 1005, 13032, 6657, 391, 3554, 15882, 18618, 11, 220, 20, 15, 4074, 15666, 296, 4593, 13]
+
+prompt_end_index: 20
+decoded_prompt_segment:
+<|reserved_token_0|><|reserved_token_1|><|startoftext|><|start_header_id|>user<|end_header_id|>
+
+Describe these cells concisely.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+decoded_target_segment:
+
+
+Adipose tissue sample with single-end reads, 50 base pairs in length.<|eot_id|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|><|endoftext|>
+
+target_positions_head30:
+[20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
+
+label_positions_head30:
+[3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]

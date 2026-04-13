@@ -653,26 +653,17 @@ class CellFeatureConversationDataset:
             if not isinstance(turn, dict):
                 continue
             role = 'user' if turn.get('from') == 'human' else 'assistant'
-            normalized.append({
-                'role': role,
-                'content': self._clean_message_text(turn.get('value', '')),
-            })
+            normalized.append((role, self._clean_message_text(turn.get('value', ''))))
 
-        while normalized and normalized[-1]['role'] != 'assistant':
+        while normalized and normalized[-1][0] != 'assistant':
             normalized.pop()
         if len(normalized) < 2:
             raise ValueError('Conversation must include at least one user/assistant turn.')
 
-        formatted_text = self.tokenizer.apply_chat_template(
-            normalized,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        if formatted_text.startswith(self._sot_token):
-            formatted_text = formatted_text[len(self._sot_token):]
-        if formatted_text.endswith(self._assistant_prompt_suffix):
-            formatted_text = formatted_text[:-len(self._assistant_prompt_suffix)]
-        return formatted_text
+        chunks = []
+        for role, content in normalized:
+            chunks.append(f'<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>')
+        return ''.join(chunks)
 
     def __len__(self):
         return len(self.samples)
