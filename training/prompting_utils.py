@@ -26,8 +26,7 @@ reserved_token_mapping = {
     '<|v2v|>': 126091,
     '<|lvg|>': 126092,
     '[iPAD]': 126093,
-    '<|r2i|>': 126094,
-    '<|t2g|>': 126094,  # alias the reverse-modality slot for text-to-gene generation
+    '<|t2g|>': 126094,
 }
 
 
@@ -511,7 +510,7 @@ class UniversalPrompting():
         return torch.cat(sequence_ids, dim=0), torch.cat(prompt_masks, dim=0), torch.cat(sequence_ids, dim=0)
 
     def r2i_prompt(self, image_ids, text_ids):
-        return self._reverse_modality_prompt(image_ids, text_ids, '<|r2i|>')
+        raise NotImplementedError('r2i prompt is not supported in this codepath; use task-specific prompting instead.')
 
     def t2g_prompt(self, gene_ids, text_ids):
         return self._reverse_modality_prompt(gene_ids, text_ids, '<|t2g|>')

@@ -1009,7 +1009,8 @@ def main():
                         accelerator.clip_grad_norm_(model.parameters(), config.training.max_grad_norm)
 
                     optimizer.step()
-                    lr_scheduler.step()
+                    if accelerator.sync_gradients:
+                        lr_scheduler.step()
 
                     if (
                             accelerator.sync_gradients
@@ -1307,7 +1308,8 @@ def main():
                     accelerator.clip_grad_norm_(model.parameters(), config.training.max_grad_norm)
 
                 optimizer.step()
-                lr_scheduler.step()
+                if accelerator.sync_gradients:
+                    lr_scheduler.step()
 
                 # log gradient norm before zeroing it
                 if (
