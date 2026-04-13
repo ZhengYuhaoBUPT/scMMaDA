@@ -6,6 +6,7 @@ logs/
 mmada-training-*/
 *.safetensors
 scmmada-training*
+scmmada-stage*
 old*
 train*
 final*

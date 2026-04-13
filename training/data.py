@@ -21,7 +21,7 @@ import random
 import re
 import pandas as pd
 from functools import partial
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from PIL import Image
 
@@ -531,6 +531,192 @@ class Text2ImageDataset:
 
 if __name__ == '__main__':
     pass
+
+
+class CellFeatureConversationDataset:
+    """
+    Cell-feature-conditioned text pretraining dataset.
+
+    This dataset keeps the existing MMUG training path but disables gene tokens by
+    returning an empty gene token sequence. The actual condition comes from the
+    aligned cell feature vector, which is later converted into soft prefix tokens.
+    """
+
+    def __init__(
+            self,
+            conversation_json_path: str,
+            cell_feature_root: str,
+            tokenizer: PreTrainedTokenizer,
+            max_seq_length: int = 128,
+            batch_size: int = 4,
+            num_workers: int = 0,
+            shuffle: bool = True,
+            pin_memory: bool = False,
+    ):
+        import anndata as ad
+
+        if tokenizer is None:
+            raise ValueError("tokenizer is required for CellFeatureConversationDataset")
+        if conversation_json_path is None or not os.path.exists(conversation_json_path):
+            raise FileNotFoundError(f"Conversation json file not found: {conversation_json_path}")
+        if cell_feature_root is None or not os.path.exists(cell_feature_root):
+            raise FileNotFoundError(f"Cell feature root not found: {cell_feature_root}")
+
+        self.tokenizer = tokenizer
+        self.max_seq_length = max_seq_length
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.shuffle = shuffle
+        self.pin_memory = pin_memory
+        self._assistant_prompt_suffix = '<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n'
+        self._sot_token = '<|startoftext|>'
+
+        with open(conversation_json_path, 'r') as f:
+            raw_data = json.load(f)
+        if not isinstance(raw_data, list):
+            raise ValueError(f"Conversation json must be a list, got {type(raw_data)}")
+
+        self.feature_paths = self._resolve_feature_paths(cell_feature_root)
+        self.feature_handles: Dict[str, object] = {}
+        requested_ids = {
+            str(item.get('id') or item.get('image'))
+            for item in raw_data
+            if isinstance(item, dict) and (item.get('id') or item.get('image'))
+        }
+        self.feature_index = self._build_feature_index(self.feature_paths, requested_ids, ad)
+
+        self.samples = []
+        for item in raw_data:
+            if not isinstance(item, dict):
+                continue
+            sample_id = str(item.get('id') or item.get('image') or '').strip()
+            conversations = item.get('conversations', [])
+            if not sample_id or sample_id not in self.feature_index or not conversations:
+                continue
+            self.samples.append(item)
+
+        if len(self.samples) == 0:
+            raise ValueError("No valid conversation+feature samples found after id alignment.")
+
+        print(
+            f"CellFeatureConversationDataset initialized with {len(self.samples)} samples, "
+            f"{len(self.feature_index)} aligned feature ids."
+        )
+
+    @staticmethod
+    def _resolve_feature_paths(cell_feature_root: str) -> List[str]:
+        if os.path.isfile(cell_feature_root):
+            return [cell_feature_root]
+        return sorted(
+            os.path.join(cell_feature_root, name)
+            for name in os.listdir(cell_feature_root)
+            if name.endswith('.h5ad')
+        )
+
+    @staticmethod
+    def _clean_message_text(text: str) -> str:
+        text = str(text)
+        text = text.replace('<image>\n', '')
+        text = text.replace('\n<image>', '')
+        text = text.replace('<image>', '')
+        return text.strip()
+
+    def _build_feature_index(
+            self,
+            feature_paths: List[str],
+            requested_ids: set,
+            anndata_module,
+    ) -> Dict[str, Tuple[str, int]]:
+        feature_index: Dict[str, Tuple[str, int]] = {}
+        for feature_path in feature_paths:
+            handle = anndata_module.read_h5ad(feature_path, backed='r')
+            if 'cell_id' in handle.obs.columns:
+                cell_ids = handle.obs['cell_id'].astype(str).tolist()
+            else:
+                cell_ids = [str(x) for x in handle.obs_names]
+            for row_idx, cell_id in enumerate(cell_ids):
+                if cell_id in requested_ids and cell_id not in feature_index:
+                    feature_index[cell_id] = (feature_path, row_idx)
+            handle.file.close()
+        return feature_index
+
+    def _get_feature_handle(self, feature_path: str):
+        import anndata as ad
+
+        if feature_path not in self.feature_handles:
+            self.feature_handles[feature_path] = ad.read_h5ad(feature_path, backed='r')
+        return self.feature_handles[feature_path]
+
+    def _format_conversation_text(self, conversations: List[dict]) -> str:
+        normalized = []
+        for turn in conversations:
+            if not isinstance(turn, dict):
+                continue
+            role = 'user' if turn.get('from') == 'human' else 'assistant'
+            normalized.append({
+                'role': role,
+                'content': self._clean_message_text(turn.get('value', '')),
+            })
+
+        while normalized and normalized[-1]['role'] != 'assistant':
+            normalized.pop()
+        if len(normalized) < 2:
+            raise ValueError('Conversation must include at least one user/assistant turn.')
+
+        formatted_text = self.tokenizer.apply_chat_template(
+            normalized,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        if formatted_text.startswith(self._sot_token):
+            formatted_text = formatted_text[len(self._sot_token):]
+        if formatted_text.endswith(self._assistant_prompt_suffix):
+            formatted_text = formatted_text[:-len(self._assistant_prompt_suffix)]
+        return formatted_text
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        import numpy as np
+        import torch
+
+        sample = self.samples[int(idx)]
+        sample_id = str(sample.get('id') or sample.get('image'))
+        feature_path, row_idx = self.feature_index[sample_id]
+        handle = self._get_feature_handle(feature_path)
+        cell_features = np.asarray(handle.X[row_idx]).reshape(-1)
+        text = self._format_conversation_text(sample.get('conversations', []))
+
+        return {
+            'sample_id': sample_id,
+            'gene_ids': torch.empty((0,), dtype=torch.long),
+            'texts': text,
+            'cell_features': torch.tensor(cell_features, dtype=torch.float32),
+        }
+
+    def collate_fn(self, batch):
+        import torch
+
+        return {
+            'sample_ids': [item['sample_id'] for item in batch],
+            'gene_ids': torch.stack([item['gene_ids'] for item in batch]),
+            'texts': [item['texts'] for item in batch],
+            'cell_features': torch.stack([item['cell_features'] for item in batch]),
+        }
+
+    def get_dataloader(self):
+        from torch.utils.data import DataLoader, RandomSampler
+
+        sampler = RandomSampler(self) if self.shuffle else None
+        return DataLoader(
+            self,
+            batch_size=self.batch_size,
+            sampler=sampler,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            collate_fn=self.collate_fn,
+        )
 
 
 class CellwTextDataset:

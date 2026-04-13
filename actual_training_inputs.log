@@ -1,0 +1,66 @@
+Actual gene training input inspection
+Date: 2026-04-13 UTC
+
+What the previous log was
+- training_data_samples.log contains raw dataset records from CellwText LMDB plus matched caption metadata.
+- It is upstream data, not yet the final packed sequence fed into the model.
+
+What the model actually receives for MMUG training
+- Dataset output fields: gene_ids, gene_expression, texts
+- Prompt builder: training/prompting_utils.py -> mmug_prompt()
+- Training callsite: training/train_scmmada.py:835
+- Actual packed sequence format before masking is:
+  <|mmug|> <|soi|> [gene_tokens] <|eoi|> <bos> [text_tokens] <eos>
+- Then prepare_inputs_and_labels_for_mmu(...) applies diffusion masking on the text target side.
+- gene_expression is not represented as token ids. It is added later as embedding-level conditioning aligned to the gene token span.
+
+Concrete real sample used below
+- Source shard: /data/bgi/data/projects/multimodal/RNA_data/cellwtext_data/CellwText/split_task1_writer1.db
+- Sample idx: 0
+- cell_id: 607
+- raw metadata:
+  celltype_name = natural killer cell
+  disease_name = normal
+  tissue_name = cortex of kidney
+  sex_name = male
+  stage_name = 38-year-old stage
+
+Actual text condition for this sample
+- texts field / caption:
+  This cell is a natural killer cell under normal condition from cortex of kidney.
+
+Actual gene side for this sample
+- raw gene_ids length in LMDB: 3000
+- train config max_gene_tokens: 1200
+- real training code first maps LMDB gene ids -> scGPT gene ids, then keeps top 1200 genes by expression, then adds gene_token_offset.
+- So the model does NOT receive all 3000 raw gene ids. It receives the top 1200 mapped-and-offset gene tokens.
+
+Top expressed genes from this sample before offset
+- B2M (lmdb_id=1541, scgpt_id=2945, expr=5.406757)
+- CCL4 (lmdb_id=5141, scgpt_id=4248, expr=4.926686)
+- MT2A (lmdb_id=4238, scgpt_id=17089, expr=4.397708)
+- NKG7 (lmdb_id=15649, scgpt_id=17783, expr=4.133223)
+- ACTB (lmdb_id=772, scgpt_id=1393, expr=4.054515)
+- BTG1 (lmdb_id=13968, scgpt_id=3340, expr=4.054515)
+- CCL3 (lmdb_id=2322, scgpt_id=4245, expr=4.054515)
+- ACTG1 (lmdb_id=5126, scgpt_id=1396, expr=3.875657)
+- FTL (lmdb_id=8105, scgpt_id=9667, expr=3.772598)
+- MYL12A (lmdb_id=17876, scgpt_id=17265, expr=3.772598)
+
+Therefore, a readable approximation of the actual MMUG input is
+- <|mmug|> <|soi|> [top1200 mapped gene tokens] <|eoi|> <bos> This cell is a natural killer cell under normal condition from cortex of kidney. <eos>
+
+The first few gene tokens conceptually look like
+- <|mmug|> <|soi|> [GENE:B2M] [GENE:CCL4] [GENE:MT2A] [GENE:NKG7] [GENE:ACTB] [GENE:BTG1] [GENE:CCL3] [GENE:ACTG1] [GENE:FTL] [GENE:MYL12A] ... <|eoi|> <bos> This cell is a natural killer cell under normal condition from cortex of kidney. <eos>
+
+Important nuance
+- The order inside the actual training sequence is expression-sorted top-k after vocab mapping, not the original LMDB order.
+- The labels for the gene part are ignore_id in MMUG. The supervised target is the text segment after <|eoi|>.
+- Separately, if t2g is enabled, the reverse task packs:
+  <|t2g|> <bos> [text_tokens] <eos> <|soi|> [gene_tokens] <|eoi|>
+  and only the gene segment is supervised there.
+
+Why I am not showing final text token ids here yet
+- I confirmed the exact packing logic from local code.
+- I have not confirmed a usable local cache path for the LLaDA tokenizer, so I am not claiming exact text token ids without verifying them.
+- If you want, I can keep going and dump one exact input_ids tensor as soon as I locate the tokenizer files on this machine.

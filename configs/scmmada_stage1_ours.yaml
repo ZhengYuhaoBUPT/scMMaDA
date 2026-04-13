@@ -1,0 +1,104 @@
+wandb:
+  entity: null
+  resume: 'auto'
+
+experiment:
+    project: "scmmada-training-stage1"
+    name: "scmmada-stage1-ours-cellfeat-pretrain"
+    output_dir: "scmmada-stage1-ours-cellfeat-pretrain"
+    max_train_examples_t2i: 40000000
+    max_train_examples_mmug: 40000000
+    max_train_examples_mmu: 40000000
+
+    save_every: 100
+    eval_every: 50
+    generate_every: 50
+    log_every: 10
+    log_grad_norm_every: 100
+    resume_from_checkpoint: "latest"
+
+model:
+    vq_model:
+        type: "magvitv2"
+        vq_model_name: "showlab/magvitv2"
+    mmada:
+        pretrained_model_path: "GSAI-ML/LLaDA-8B-Instruct"
+        w_clip_vit: False
+        new_vocab_size: 126465  # text + reserved token space only for this stage
+        llm_vocab_size: 126464
+        num_new_special_tokens: 0
+        tie_word_embeddings: False
+
+    gradient_checkpointing: True
+
+dataset:
+    gen_type: "imagenet1k"
+    und_type: "captioning"
+    combined_loader_mode: "max_size_cycle"
+    params:
+        train_cell_feature_conversations_path: "/data/bgi/data/projects/multimodal/zyh/datasets/sft_conversations/pretrain_texts.json"
+        cell_feature_root: "/data/bgi/data/projects/multimodal/zyh/datasets/features"
+        cell_feature_dim: 768
+        train_t2i_shards_path_or_url: null
+        train_mmu_shards_path_or_url: null
+        train_lm_shards_path_or_url: null
+        add_caption_prompt: False
+        validation_prompts_file: "validation_prompts/imagenet_prompts.txt"
+        mmu_image_root: "/data/bgi/data/projects/multimodal/zyh/datasets/mmu_validation"
+        shuffle_buffer_size: 50
+        num_workers: 0
+        resolution: 256
+        pin_memory: False
+        persistent_workers: False
+
+    preprocessing:
+        max_seq_length: 128
+        resolution: 256
+        center_crop: False
+        random_flip: False
+
+optimizer:
+    name: adamw
+    params:
+        learning_rate: 0.0001
+        scale_lr: False
+        beta1: 0.9
+        beta2: 0.999
+        weight_decay: 0.01
+        epsilon: 1e-8
+
+lr_scheduler:
+    scheduler: "cosine"
+    params:
+        learning_rate: ${optimizer.params.learning_rate}
+        warmup_steps: 50
+        min_lr_scale: 0.1
+
+training:
+    gradient_accumulation_steps: 2
+    noise_type: "mask"
+    batch_size_t2i: 0
+    batch_size_mmug: 32
+    batch_size_t2g: 0
+    batch_size_lm: 0
+    batch_size_mmu: 0
+    mixed_precision: "bf16"
+    enable_tf32: True
+    seed: 10086
+    max_train_steps: 500
+    mmug_only: true
+    unified_seq_len: 256
+    cell_feature_num_soft_tokens: 1
+    cell_feature_dropout: 0.0
+    overfit_one_batch: False
+    cond_dropout_prob: 0.1
+    min_masking_rate: 0.0
+    label_smoothing: 0.0
+    max_grad_norm: 1
+    guidance_scale: 1.5
+    generation_timesteps: 12
+    t2i_coeff: 0.0
+    mmug_coeff: 1.0
+    t2g_coeff: 0.0
+    lm_coeff: 0.0
+    mmu_coeff: 0.0

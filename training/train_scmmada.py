@@ -37,7 +37,7 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedType, set_seed
 
-from training.data import Text2ImageDataset, CellwTextDataset, load_gene_vocab
+from training.data import Text2ImageDataset, CellFeatureConversationDataset, CellwTextDataset, load_gene_vocab
 from training.utils import get_config, flatten_omega_conf, image_transform
 from training.imagenet_dataset import ImageNetDataset
 from parquet import RefinedWebDataset
@@ -443,10 +443,28 @@ def main():
         else:
             raise NotImplementedError(f"Unsupported dataset type {config.dataset.und_type}")
 
-    # CellwText gene-to-text dataset
+    # Gene / cell-feature understanding dataset
     train_dataloader_t2g = None
     num_update_steps_per_epoch_t2g = None
-    if hasattr(dataset_config, 'train_g2t_lmdb_path') and dataset_config.train_g2t_lmdb_path is not None:
+    if dataset_config.get('train_cell_feature_conversations_path', None) is not None:
+        dataset_mmug = CellFeatureConversationDataset(
+            conversation_json_path=dataset_config.train_cell_feature_conversations_path,
+            cell_feature_root=dataset_config.cell_feature_root,
+            tokenizer=tokenizer,
+            max_seq_length=preproc_config.max_seq_length,
+            batch_size=batch_size_mmug_cfg,
+            num_workers=dataset_config.num_workers,
+            shuffle=True,
+            pin_memory=dataset_config.pin_memory,
+        )
+        train_dataloader_mmug = dataset_mmug.get_dataloader()
+        total_batch_size_mmug = (
+            train_dataloader_mmug.batch_size * accelerator.num_processes * config.training.gradient_accumulation_steps
+        )
+        num_update_steps_per_epoch_mmug = math.ceil(len(dataset_mmug) / total_batch_size_mmug)
+        if float(config.training.get("t2g_coeff", 0.0)) > 0.0:
+            logger.warning("Cell-feature conversation pretraining does not provide gene tokens; forcing t2g flow off.")
+    elif hasattr(dataset_config, 'train_g2t_lmdb_path') and dataset_config.train_g2t_lmdb_path is not None:
         dataset_mmug = CellwTextDataset(
             lmdb_paths=dataset_config.train_g2t_lmdb_path,
             gene_vocab_path=dataset_config.get('gene_vocab_path', ''),
