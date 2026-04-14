@@ -186,13 +186,15 @@ class UniversalPrompting():
                 text_ids[i] = [self.text_tokenizer.bos_token_id] + text_ids[i]
 
             temp_ids = text_ids[i] + [self.text_tokenizer.eos_token_id]
+            actual_text_len = len(temp_ids)
 
-            if max_text_len >= len(temp_ids):
-                temp_ids = temp_ids + [self.text_tokenizer.eos_token_id] * (max_text_len - len(temp_ids))
-                temp_masks = [1] * (len(temp_ids) + gene_ids.shape[-1] + 3) + [0] * (max_text_len - len(temp_ids))
+            if max_text_len >= actual_text_len:
+                padding_len = max_text_len - actual_text_len
+                temp_ids = temp_ids + [self.pad_id] * padding_len
             else:
                 temp_ids = temp_ids[:max_text_len - 1] + [self.text_tokenizer.eos_token_id]
-                temp_masks = [1] * (len(temp_ids) + gene_ids.shape[-1] + 3)
+                actual_text_len = len(temp_ids)
+                padding_len = 0
 
             # prompting -- <|mmug|> <|soi|> [gene_tokens] <|eoi|> <bos> [text_tokens] <eos>
             temp_label_ids = torch.cat([
@@ -215,16 +217,17 @@ class UniversalPrompting():
 
             end_header_id = int(self.sptids_dict['<|end_header_id|>'])
             end_header_pos = -1
-            for pos in range(len(temp_ids) - 1, -1, -1):
+            for pos in range(actual_text_len - 1, -1, -1):
                 if temp_ids[pos] == end_header_id:
                     end_header_pos = pos
                     break
+            text_prefix_len = len(return_temp_ids) - len(temp_ids)
             if end_header_pos != -1:
-                prompt_length = len(return_temp_ids) - len(temp_ids) + end_header_pos + 1
+                prompt_length = text_prefix_len + end_header_pos + 1
             else:
-                prompt_length = len(return_temp_ids) - len(temp_ids)
-            predict_length = len(return_temp_ids) - prompt_length
-            prompt_mask = [1] * prompt_length + [0] * predict_length
+                prompt_length = text_prefix_len
+            answer_length = max(actual_text_len - max(end_header_pos + 1, 0), 0) if end_header_pos != -1 else actual_text_len
+            prompt_mask = [1] * prompt_length + [0] * answer_length + [1] * padding_len
             prompt_mask = torch.tensor(prompt_mask).to(device)
             sequence_ids.append(return_temp_ids.unsqueeze(0))
             prompt_masks.append(prompt_mask.unsqueeze(0))

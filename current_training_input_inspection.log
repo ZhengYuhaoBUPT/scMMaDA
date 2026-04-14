@@ -1,0 +1,110 @@
+Current training input inspection (post-fix)
+===========================================
+model_path: /data/bgi/data/projects/multimodal/zyh/hf_cache/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07
+conversation_json: /data/bgi/data/projects/multimodal/zyh/datasets/sft_conversations/pretrain_texts.json
+mmug_seq_len: 131
+gene_len_unique: [0]
+mask_strategy: only positions with prompt_mask==0 are target; padding is excluded from target
+
+--- sample dataset_idx=0 sample_id=SRX079943 ---
+target_pos_start_end: 20..41
+target_len: 22
+cell_features_first10: [-0.1486, 0.5122, 0.8325, -0.2297, 1.3027, -0.6836, 0.2712, 0.2472, -0.9141, 1.249]
+raw_conversation_text:
+<|start_header_id|>user<|end_header_id|>
+
+Describe these cells concisely.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Adipose tissue sample with single-end reads, 50 base pairs in length.<|eot_id|>
+
+target_first40_ids: [198, 198, 4122, 648, 1005, 13032, 6657, 391, 3554, 15882, 18618, 11, 220, 20, 15, 4074, 15666, 296, 4593, 13, 126348, 126081]
+target_first40_labels: [198, 198, 4122, 648, 1005, 13032, 6657, 391, 3554, 15882, 18618, 11, 220, 20, 15, 4074, 15666, 296, 4593, 13, 126348, 126081]
+decoded_target_text:
+
+
+Adipose tissue sample with single-end reads, 50 base pairs in length.<|eot_id|><|endoftext|>
+masked_tokens_avg_over_256_draws: 10.99
+masked_tokens_minmax_over_256_draws: 1..22
+
+--- sample dataset_idx=1 sample_id=SRX079944 ---
+target_pos_start_end: 20..50
+target_len: 31
+cell_features_first10: [-0.4785, -0.2102, 0.7979, -0.067, -0.171, -0.22, 1.1553, -0.585, -1.6455, 0.832]
+raw_conversation_text:
+<|start_header_id|>user<|end_header_id|>
+
+What does the sample represent?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Sample is derived from the adrenal gland tissue of a human, sequenced using single-end reads with a read length of 50 nucleotides.<|eot_id|>
+
+target_first40_ids: [198, 198, 20338, 341, 13449, 546, 268, 87083, 53257, 13032, 300, 259, 3738, 11, 94493, 1661, 3554, 15882, 18618, 391, 259, 1463, 4593, 300, 220, 20, 15, 115259, 13, 126348, 126081]
+target_first40_labels: [198, 198, 20338, 341, 13449, 546, 268, 87083, 53257, 13032, 300, 259, 3738, 11, 94493, 1661, 3554, 15882, 18618, 391, 259, 1463, 4593, 300, 220, 20, 15, 115259, 13, 126348, 126081]
+decoded_target_text:
+
+
+Sample is derived from the adrenal gland tissue of a human, sequenced using single-end reads with a read length of 50 nucleotides.<|eot_id|><|endoftext|>
+masked_tokens_avg_over_256_draws: 15.10
+masked_tokens_minmax_over_256_draws: 1..31
+
+--- sample dataset_idx=2 sample_id=SRX079945 ---
+target_pos_start_end: 22..41
+target_len: 20
+cell_features_first10: [-0.4695, -0.6045, 1.7549, 0.1622, 1.0293, 0.7476, 0.4507, -0.051, -1.3926, 0.8691]
+raw_conversation_text:
+<|start_header_id|>user<|end_header_id|>
+
+Give a brief description of these cells.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Brain tissue sample with single-end library type and read length of 50.<|eot_id|>
+
+target_first40_ids: [198, 198, 64936, 13032, 6657, 391, 3554, 15882, 8296, 2023, 301, 1463, 4593, 300, 220, 20, 15, 13, 126348, 126081]
+target_first40_labels: [198, 198, 64936, 13032, 6657, 391, 3554, 15882, 8296, 2023, 301, 1463, 4593, 300, 220, 20, 15, 13, 126348, 126081]
+decoded_target_text:
+
+
+Brain tissue sample with single-end library type and read length of 50.<|eot_id|><|endoftext|>
+masked_tokens_avg_over_256_draws: 9.68
+masked_tokens_minmax_over_256_draws: 1..20
+
+--- sample dataset_idx=10 sample_id=SRX079953 ---
+target_pos_start_end: 20..42
+target_len: 23
+cell_features_first10: [-0.4568, 0.2428, 0.3464, -0.415, 1.0898, -1.7803, 0.4011, -0.4277, -0.6157, 1.7295]
+raw_conversation_text:
+<|start_header_id|>user<|end_header_id|>
+
+Describe the sample concisely.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Sample of human ovary tissue with single-end library type and read length of 50.<|eot_id|>
+
+target_first40_ids: [198, 198, 20338, 300, 3738, 30331, 710, 13032, 391, 3554, 15882, 8296, 2023, 301, 1463, 4593, 300, 220, 20, 15, 13, 126348, 126081]
+target_first40_labels: [198, 198, 20338, 300, 3738, 30331, 710, 13032, 391, 3554, 15882, 8296, 2023, 301, 1463, 4593, 300, 220, 20, 15, 13, 126348, 126081]
+decoded_target_text:
+
+
+Sample of human ovary tissue with single-end library type and read length of 50.<|eot_id|><|endoftext|>
+masked_tokens_avg_over_256_draws: 11.66
+masked_tokens_minmax_over_256_draws: 1..23
+
+--- sample dataset_idx=100 sample_id=SRX10001463 ---
+target_pos_start_end: 20..68
+target_len: 49
+cell_features_first10: [-0.4355, 0.1825, 1.0537, -0.5972, 1.9229, 1.7891, -0.2261, -0.0731, -0.5005, 0.7578]
+raw_conversation_text:
+<|start_header_id|>user<|end_header_id|>
+
+What do these cells represent?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Cancer cells derived from the NCI-H226 cell line with KDM5B knocked down (shLuc), cultured in RPMI 1640 with 5% FBS media, passed using trypsin.<|eot_id|>
+
+target_first40_ids: [198, 198, 78092, 4643, 13449, 546, 268, 493, 10517, 9974, 17, 17, 21, 2708, 2328, 391, 825, 11827, 20, 33, 40242, 1635, 363, 1292, 50204, 943, 48249, 296, 63786, 40, 220, 16, 21, 19, 15, 391, 220, 20, 4, 114954]
+target_first40_labels: [198, 198, 78092, 4643, 13449, 546, 268, 493, 10517, 9974, 17, 17, 21, 2708, 2328, 391, 825, 11827, 20, 33, 40242, 1635, 363, 1292, 50204, 943, 48249, 296, 63786, 40, 220, 16, 21, 19, 15, 391, 220, 20, 4, 114954]
+decoded_target_text:
+
+
+Cancer cells derived from the NCI-H226 cell line with KDM5B knocked down (shLuc), cultured in RPMI 1640 with 5% FBS media, passed using trypsin.<|eot_id|><|endoftext|>
+masked_tokens_avg_over_256_draws: 24.66
+masked_tokens_minmax_over_256_draws: 1..49
+
+summary_target_lens: [22, 31, 20, 23, 49]
+summary_masked_avg: [10.99, 15.1, 9.68, 11.66, 24.66]
