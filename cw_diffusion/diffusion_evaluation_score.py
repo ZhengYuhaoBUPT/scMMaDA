@@ -238,7 +238,8 @@ def compute_masked_diffusion_loss_per_example(logits, input_ids_masked, labels_m
         reduction='none',
     ).view(batch_size, -1)
     weights = torch.zeros_like(ce)
-    weights[masked_indices] = 1.0 / p_mask_masked[masked_indices]
+    inv_p_mask = (1.0 / p_mask_masked.to(dtype=ce.dtype)).to(dtype=ce.dtype)
+    weights[masked_indices] = inv_p_mask[masked_indices]
     per_token = ce * weights
     per_token = torch.where(masked_indices, per_token / answer_lengths_masked, torch.zeros_like(per_token))
     return per_token.sum(dim=1)
