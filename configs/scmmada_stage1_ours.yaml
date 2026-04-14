@@ -71,11 +71,11 @@ lr_scheduler:
     scheduler: "cosine"
     params:
         learning_rate: ${optimizer.params.learning_rate}
-        warmup_steps: 50
+        warmup_steps: 100
         min_lr_scale: 0.1
 
 training:
-    gradient_accumulation_steps: 2
+    gradient_accumulation_steps: 4
     noise_type: "mask"
     batch_size_t2i: 0
     batch_size_mmug: 32
@@ -85,10 +85,10 @@ training:
     mixed_precision: "bf16"
     enable_tf32: True
     seed: 10086
-    max_train_steps: 500
+    max_train_steps: 50000
     mmug_only: true
     unified_seq_len: 256
-    cell_feature_num_soft_tokens: 1
+    cell_feature_num_soft_tokens: 8
     cell_feature_dropout: 0.0
     overfit_one_batch: False
     cond_dropout_prob: 0.1

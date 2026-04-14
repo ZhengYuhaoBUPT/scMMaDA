@@ -15,15 +15,15 @@ Files:
 
 Example:
 ```bash
-python cw_diffusion/diffusion_evaluation_score.py \
-  --train-config configs/scmmada_stage1_ours.yaml \
-  --model-path /path/to/checkpoint-500/unwrapped_model \
-  --evaluation-dataset /path/to/eval_conversations.json \
-  --feature-root /data/bgi/data/projects/multimodal/zyh/datasets/features \
-  --output-csv cw_diffusion/results/diffusion_eval.csv \
-  --batch-size 8 \
-  --num-negatives 10 \
-  --score-repeats 4
+  python cw_diffusion/diffusion_evaluation_score.py \
+    --train-config configs/scmmada_stage1_ours.yaml \
+    --model-path /mnt/c20250607/user/wanghaoran/zyh/scMMaDA/scmmada-stage1-ours-cellfeat-pretrain-old-0/checkpoint-200/unwrapped_model \
+    --evaluation-dataset /mnt/c20250607/user/wanghaoran/zyh/datasets/sft_conversations/finetune_conversations.json \
+    --feature-root /mnt/c20250607/user/wanghaoran/zyh/datasets/features \
+    --output-csv cw_diffusion/results/diffusion_eval.csv \
+    --batch-size 8 \
+    --num-negatives 10 \
+    --score-repeats 4
 ```
 
 Output compatibility:
