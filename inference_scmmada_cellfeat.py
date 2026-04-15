@@ -1,7 +1,8 @@
 import argparse
 import json
 import os
-from typing import Dict, List, Optional, Tuple
+import random
+from typing import Dict, List, Tuple
 
 import anndata as ad
 import numpy as np
@@ -47,9 +48,20 @@ def load_model_and_tokenizer(cfg_path: str, checkpoint_path: str, device: torch.
     mmada_config_dict['pretrained_model_path'] = checkpoint_path
     merged_config = {**base_config, **mmada_config_dict}
     mmada_config = MMadaConfig(**merged_config)
-    mmada_config.new_vocab_size = int(max(int(getattr(mmada_config, 'llm_vocab_size', 0)), len(tokenizer), max(reserved_token_mapping.values()) + 1))
+    mmada_config.new_vocab_size = int(
+        max(
+            int(getattr(mmada_config, 'llm_vocab_size', 0)),
+            len(tokenizer),
+            max(reserved_token_mapping.values()) + 1,
+        )
+    )
 
-    model = MMadaModelLM.from_pretrained(checkpoint_path, torch_dtype=torch.bfloat16, config=mmada_config)
+    model = MMadaModelLM.from_pretrained(
+        tokenizer_path,
+        torch_dtype=torch.bfloat16,
+        config=mmada_config,
+        ignore_mismatched_sizes=True,
+    )
     model.resize_token_embeddings(mmada_config.new_vocab_size)
     model.config.embedding_size = model.config.vocab_size
     model = model.to(device)
@@ -67,7 +79,6 @@ def load_model_and_tokenizer(cfg_path: str, checkpoint_path: str, device: torch.
             dropout=float(cfg.training.get('cell_feature_dropout', 0.0)),
         )
 
-    # Reload full checkpoint after conditioning modules are initialized.
     bin_path = os.path.join(checkpoint_path, 'pytorch_model.bin')
     bin_index = os.path.join(checkpoint_path, 'pytorch_model.bin.index.json')
     safe_path = os.path.join(checkpoint_path, 'model.safetensors')
@@ -129,14 +140,21 @@ def generate_answer(
     temperature: float = 0.0,
 ):
     prompt_text = build_question_prompt(question)
-    gene_ids = torch.zeros((1, 0), dtype=torch.long, device=cell_features.device)
-    input_ids, _ = uni_prompting((gene_ids, [prompt_text]), 'mmug_gen')
-    input_ids = input_ids.to(cell_features.device)
+    prompt_token_ids = tokenizer(prompt_text, add_special_tokens=False)['input_ids']
+    bos_id = tokenizer.bos_token_id
+    if bos_id is not None and (len(prompt_token_ids) == 0 or prompt_token_ids[0] != bos_id):
+        prompt_token_ids = [bos_id] + prompt_token_ids
+
+    seq_ids = [
+        int(uni_prompting.sptids_dict['<|mmug|>']),
+        int(uni_prompting.sptids_dict['<|soi|>']),
+        int(uni_prompting.sptids_dict['<|eoi|>']),
+    ] + prompt_token_ids
+    input_ids = torch.tensor(seq_ids, dtype=torch.long, device=cell_features.device).unsqueeze(0)
 
     mask_id = model.config.mask_token_id
     x = torch.full((1, input_ids.shape[1] + max_new_tokens), mask_id, dtype=torch.long, device=cell_features.device)
     x[:, :input_ids.shape[1]] = input_ids
-    prompt_index = x != mask_id
 
     assert max_new_tokens % block_length == 0
     num_blocks = max_new_tokens // block_length
@@ -150,11 +168,24 @@ def generate_answer(
             mask_index = x == mask_id
             attention_bias = torch.ones(x.shape[0], 1, x.shape[1], x.shape[1], device=x.device)
             if prefix_length > 0:
-                prefix_ids = torch.full((x.shape[0], prefix_length), tokenizer.pad_token_id or tokenizer.eos_token_id, dtype=x.dtype, device=x.device)
+                prefix_ids = torch.full(
+                    (x.shape[0], prefix_length),
+                    tokenizer.pad_token_id or tokenizer.eos_token_id,
+                    dtype=x.dtype,
+                    device=x.device,
+                )
                 input_ids_for_model = torch.cat([prefix_ids, x], dim=1)
-                inputs_embeds = model.build_inputs_embeds_with_conditioning(input_ids=x, cell_features=cell_features, gene_token_start=2)
+                inputs_embeds = model.build_inputs_embeds_with_conditioning(
+                    input_ids=x,
+                    cell_features=cell_features,
+                    gene_token_start=2,
+                )
                 attention_bias = model.extend_attention_bias_for_prefix(attention_bias, prefix_length)
-                logits = model(input_ids=input_ids_for_model, inputs_embeds=inputs_embeds, attention_bias=attention_bias).logits
+                logits = model(
+                    input_ids=input_ids_for_model,
+                    inputs_embeds=inputs_embeds,
+                    attention_bias=attention_bias,
+                ).logits
                 logits = logits[:, prefix_length:, :]
             else:
                 logits = model(input_ids=x, attention_bias=attention_bias).logits
@@ -192,25 +223,36 @@ def generate_answer(
         if token_id in stop_tokens:
             break
         trimmed.append(token_id)
-    return tokenizer.decode(trimmed, skip_special_tokens=True).strip(), prompt_text, input_ids[0].tolist(), generated_ids
+    answer = tokenizer.decode(trimmed, skip_special_tokens=True).strip()
+    return answer, prompt_text, input_ids[0].tolist(), generated_ids
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', required=True)
-    parser.add_argument('--checkpoint', required=True)
-    parser.add_argument('--cell-id', required=True)
-    parser.add_argument('--question', required=True)
-    parser.add_argument('--feature-root', default=None)
-    parser.add_argument('--max-new-tokens', type=int, default=64)
-    parser.add_argument('--steps', type=int, default=64)
-    parser.add_argument('--block-length', type=int, default=64)
-    parser.add_argument('--temperature', type=float, default=0.0)
-    parser.add_argument('--output-json', default=None)
-    args = parser.parse_args()
+def load_conversation_samples(json_path: str) -> List[Dict]:
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError(f'Conversation JSON must be a list: {json_path}')
+    return data
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    cfg, tokenizer, uni_prompting, model = load_model_and_tokenizer(args.config, args.checkpoint, device)
+
+def extract_question_and_reference(conversations: List[Dict]) -> Tuple[str, str]:
+    question = None
+    reference = None
+    for turn in conversations:
+        speaker = str(turn.get('from', '')).strip().lower()
+        value = str(turn.get('value', '')).strip()
+        if question is None and speaker in {'human', 'user'}:
+            question = clean_question_text(value)
+        elif reference is None and speaker in {'gpt', 'assistant'}:
+            reference = value
+        if question is not None and reference is not None:
+            break
+    if not question or not reference:
+        raise ValueError(f'Invalid conversation turns: {conversations}')
+    return question, reference
+
+
+def run_single_inference(args, cfg, tokenizer, uni_prompting, model, device):
     feature_root = args.feature_root or cfg.dataset.params.cell_feature_root
     feature = find_cell_feature(args.cell_id, feature_root)
     cell_features = torch.tensor(feature, dtype=torch.float32, device=device).unsqueeze(0)
@@ -227,7 +269,7 @@ def main():
         temperature=args.temperature,
     )
 
-    result = {
+    return {
         'cell_id': args.cell_id,
         'question': args.question,
         'prompt_text': prompt_text,
@@ -235,6 +277,70 @@ def main():
         'prompt_ids': prompt_ids,
         'generated_ids': generated_ids,
     }
+
+
+def run_sampled_inference(args, cfg, tokenizer, uni_prompting, model, device):
+    feature_root = args.feature_root or cfg.dataset.params.cell_feature_root
+    data = load_conversation_samples(args.conversation_json)
+    rng = random.Random(args.sample_seed)
+    selected = rng.sample(data, k=min(args.sample_k, len(data)))
+
+    results = []
+    for idx, item in enumerate(selected):
+        cell_id = str(item['id'])
+        question, reference = extract_question_and_reference(item['conversations'])
+        feature = find_cell_feature(cell_id, feature_root)
+        cell_features = torch.tensor(feature, dtype=torch.float32, device=device).unsqueeze(0)
+        answer, prompt_text, prompt_ids, generated_ids = generate_answer(
+            model=model,
+            tokenizer=tokenizer,
+            uni_prompting=uni_prompting,
+            cell_features=cell_features,
+            question=question,
+            max_new_tokens=args.max_new_tokens,
+            steps=args.steps,
+            block_length=args.block_length,
+            temperature=args.temperature,
+        )
+        results.append({
+            'sample_index': idx,
+            'cell_id': cell_id,
+            'question': question,
+            'reference_answer': reference,
+            'predicted_answer': answer,
+            'prompt_text': prompt_text,
+            'prompt_ids': prompt_ids,
+            'generated_ids': generated_ids,
+        })
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', required=True)
+    parser.add_argument('--checkpoint', required=True)
+    parser.add_argument('--cell-id', default=None)
+    parser.add_argument('--question', default=None)
+    parser.add_argument('--conversation-json', default=None)
+    parser.add_argument('--sample-k', type=int, default=5)
+    parser.add_argument('--sample-seed', type=int, default=42)
+    parser.add_argument('--feature-root', default=None)
+    parser.add_argument('--max-new-tokens', type=int, default=64)
+    parser.add_argument('--steps', type=int, default=64)
+    parser.add_argument('--block-length', type=int, default=64)
+    parser.add_argument('--temperature', type=float, default=0.0)
+    parser.add_argument('--output-json', default=None)
+    args = parser.parse_args()
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    cfg, tokenizer, uni_prompting, model = load_model_and_tokenizer(args.config, args.checkpoint, device)
+
+    if args.conversation_json:
+        result = run_sampled_inference(args, cfg, tokenizer, uni_prompting, model, device)
+    else:
+        if not args.cell_id or not args.question:
+            raise ValueError('Single inference mode requires both --cell-id and --question')
+        result = run_single_inference(args, cfg, tokenizer, uni_prompting, model, device)
 
     if args.output_json:
         with open(args.output_json, 'w') as f:

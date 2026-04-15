@@ -24,7 +24,7 @@ model:
 
     mmada:
         tokenizer_path: "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07"
-        pretrained_model_path: "scmmada-stage1-ours-cellfeat-pretrain/checkpoint-200/unwrapped_model"
+        pretrained_model_path: "scmmada-stage1-ours-cellfeat-pretrain/checkpoint-3000/unwrapped_model"
         w_clip_vit: False
         new_vocab_size: 126465
         llm_vocab_size: 126464
@@ -38,15 +38,15 @@ dataset:
     und_type: "captioning"
     combined_loader_mode: "max_size_cycle"
     params:
-        train_cell_feature_conversations_path: "/data/bgi/data/projects/multimodal/zyh/datasets/sft_conversations/finetune_conversations.json"
-        cell_feature_root: "/data/bgi/data/projects/multimodal/zyh/datasets/features"
+        train_cell_feature_conversations_path: "/mnt/c20250607/user/wanghaoran/zyh/datasets/sft_conversations/finetune_conversations.json"
+        cell_feature_root: "/mnt/c20250607/user/wanghaoran/zyh/datasets/features"
         cell_feature_dim: 768
         train_t2i_shards_path_or_url: null
         train_mmu_shards_path_or_url: null
         train_lm_shards_path_or_url: null
         add_caption_prompt: False
         validation_prompts_file: "validation_prompts/imagenet_prompts.txt"
-        mmu_image_root: "/data/bgi/data/projects/multimodal/zyh/datasets/mmu_validation"
+        mmu_image_root: "/mnt/c20250607/user/wanghaoran/zyh/datasets/mmu_validation"
         shuffle_buffer_size: 50
         num_workers: 0
         resolution: 256
