@@ -163,7 +163,8 @@ def main():
     #########################
     logger.info("Loading models and optimizer")
 
-    tokenizer = AutoTokenizer.from_pretrained(config.model.mmada.pretrained_model_path, padding_side="left")
+    tokenizer_path = config.model.mmada.get("tokenizer_path", config.model.mmada.pretrained_model_path)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, padding_side="left")
 
     uni_prompting = UniversalPrompting(tokenizer, max_text_len=config.dataset.preprocessing.max_seq_length,
                                        special_tokens=(

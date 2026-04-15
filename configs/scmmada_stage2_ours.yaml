@@ -23,6 +23,7 @@ model:
         vq_model_name: "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--showlab--magvitv2/snapshots/5c3fa78f8b3523347c5cd1a4c97f3c4e96f33d5d"
 
     mmada:
+        tokenizer_path: "/mnt/c20250607/user/wanghaoran/zyh/hf_cache/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/08b83a6feb34df1a6011b80c3c00c7563e963b07"
         pretrained_model_path: "scmmada-stage1-ours-cellfeat-pretrain/checkpoint-200/unwrapped_model"
         w_clip_vit: False
         new_vocab_size: 126465
