@@ -259,6 +259,46 @@ def main():
             dropout=float(config.training.get("cell_feature_dropout", 0.0)),
         )
 
+    tokenizer_path = config.model.mmada.get("tokenizer_path", config.model.mmada.pretrained_model_path)
+    pretrained_model_path = config.model.mmada.pretrained_model_path
+    if tokenizer_path != pretrained_model_path:
+        logger.info(
+            f"Reloading checkpoint weights after conditioning init from {pretrained_model_path} "
+            "so stage1 cell-feature and gene-expression modules are restored."
+        )
+        if os.path.exists(f'{pretrained_model_path}/pytorch_model.bin'):
+            state_dict = torch.load(f'{pretrained_model_path}/pytorch_model.bin', map_location='cpu')
+            load_result = model.load_state_dict(state_dict, strict=False)
+            logger.warning(
+                "Post-init checkpoint load used strict=False. "
+                f"Missing keys: {list(load_result.missing_keys)[:20]}, "
+                f"Unexpected keys: {list(load_result.unexpected_keys)[:20]}"
+            )
+            del state_dict
+        elif os.path.exists(f'{pretrained_model_path}/pytorch_model.bin.index.json'):
+            from transformers.modeling_utils import load_sharded_checkpoint
+            load_sharded_checkpoint(model, pretrained_model_path, strict=False)
+            logger.warning("Post-init sharded checkpoint load used strict=False.")
+        elif os.path.exists(f'{pretrained_model_path}/model.safetensors.index.json'):
+            from transformers.modeling_utils import load_sharded_checkpoint
+            load_sharded_checkpoint(model, pretrained_model_path, strict=False)
+            logger.warning("Post-init safetensors sharded checkpoint load used strict=False.")
+        elif os.path.exists(f'{pretrained_model_path}/model.safetensors'):
+            from safetensors.torch import load_file
+            state_dict = load_file(f'{pretrained_model_path}/model.safetensors')
+            load_result = model.load_state_dict(state_dict, strict=False)
+            logger.warning(
+                "Post-init safetensors checkpoint load used strict=False. "
+                f"Missing keys: {list(load_result.missing_keys)[:20]}, "
+                f"Unexpected keys: {list(load_result.unexpected_keys)[:20]}"
+            )
+            del state_dict
+        else:
+            logger.warning(
+                f"No standalone checkpoint weights found under {pretrained_model_path}; "
+                "only backbone weights loaded via from_pretrained."
+            )
+
     mask_id = model.config.mask_token_id
 
     ##################################
